@@ -24,6 +24,9 @@ export interface Parsed {
   slope: number | null;
   players: ParsedPlayer[];
   unreadable: string[];
+  /** where courseRating/slope came from — shown in the review screen so nothing is silently trusted */
+  ratingSource: "card" | "course" | "lookup" | null;
+  ratingNote: string | null;
 }
 
 export interface Issue {
@@ -34,12 +37,19 @@ export interface Issue {
 export const sum = (a: (number | null)[]) => a.reduce<number>((s, v) => s + (v ?? 0), 0);
 
 export function visionPrompt(names: string[], courses: string[]): string {
-  return `You are reading a golf scorecard. It may be a photo of a paper card or a screenshot from a golf app. If several images are given, they are pages of the SAME card (usually front nine and back nine) — merge them into one result.
+  return `You are reading a golf scorecard. It may be a photo of a paper card or a screenshot from a golf app (18Birdies, Golfshot, Hole19, etc). If several images are given, they are pages of the SAME card (usually front nine and back nine) — merge them into one result.
 
-How a scorecard is laid out:
+How a paper scorecard is laid out:
 - Columns are holes, numbered 1-9 then 10-18. There are usually OUT, IN and TOTAL columns.
 - Rows near the top are yardages for each tee, then PAR, then STROKE INDEX (labelled SI, S.I., Index, HCP or Handicap) which contains each number from 1 to 18 exactly once, in scrambled order.
 - Rows below are players, with a name written at the left and their strokes in each hole column.
+
+How an 18Birdies-style app screenshot is laid out (read this just as carefully — it's typed, not handwritten, so get every field exact):
+- A row labelled "HOLE" gives hole numbers, "PAR" gives the printed par per hole, and "HANDICAP" is the STROKE INDEX per hole (not a player's personal handicap) — map that row to strokeIndex.
+- One or more rows labelled "SCORE" give gross strokes per hole. A solo round has one SCORE row for the account holder; a group round has one SCORE row per player, each with a name label to its left or above it (sometimes on a separate "Scorecard" or "Group" screen with a row per player instead of just one). Capture every player's row you can see. Ignore any "NET" row entirely — that's the app's own handicap-adjusted score, not what we want.
+- The tee and rating are usually on one line near the date, formatted like "Yellow 3121 yds (121.0/35.4)" — two numbers in brackets, slash-separated. One of them is Slope (always a whole number, roughly 55-155) and the other is Course Rating (usually close to par, e.g. 33-37 for a 9-hole course or 67-77 for 18). Work out which is which from those ranges, not from position, and put them in courseRating and slope accordingly.
+- The played date is usually shown as a plain date in a bar at the very bottom or top of the screen (commonly DD/MM/YYYY). Convert whatever format you see to YYYY-MM-DD.
+- The course name is usually at the top, sometimes with the tee or "(9 HOLES)"/"(18 HOLES)" appended — strip that qualifier into the holes count, not into the course name itself.
 
 Read it carefully, one row at a time. Then return ONLY a JSON object, no markdown fences, no commentary:
 
@@ -112,7 +122,18 @@ export function normalise(raw: unknown, knownPlayers: string[], knownCourses: { 
     slope: num(r.slope),
     players: [],
     unreadable: Array.isArray(r.unreadable) ? (r.unreadable as unknown[]).map(String).slice(0, 5) : [],
+    ratingSource: null,
+    ratingNote: null,
   };
+  // Digital scorecards often print rating/slope as an unlabelled bracketed
+  // pair, e.g. "(121.0/35.4)". Slope is always a whole number 55–155; if
+  // what came back as "slope" falls outside that range while "courseRating"
+  // is a whole number inside it, the two were almost certainly read in the
+  // wrong order — put them back.
+  if (p.slope != null && (p.slope < 55 || p.slope > 155) && p.courseRating != null && Number.isInteger(p.courseRating) && p.courseRating >= 55 && p.courseRating <= 155) {
+    [p.courseRating, p.slope] = [p.slope, p.courseRating];
+  }
+  if (p.courseRating != null || p.slope != null) p.ratingSource = "card";
   p.players = (Array.isArray(r.players) ? (r.players as Record<string, unknown>[]) : [])
     .map((pl) => {
       const scores = pad(Array.isArray(pl.scores) ? (pl.scores as unknown[]).map(num) : [], null);
@@ -134,6 +155,7 @@ export function normalise(raw: unknown, knownPlayers: string[], knownCourses: { 
   const known = knownCourses.find((c) => c.name.toLowerCase().trim() === p.course.toLowerCase().trim() && (c.holes == null || c.holes === holes));
   if (known) {
     p.course = known.name;
+    if (p.courseRating == null && p.slope == null && (known.course_rating != null || known.slope != null)) p.ratingSource = "course";
     p.courseRating = p.courseRating ?? known.course_rating;
     p.slope = p.slope ?? known.slope;
     if (!p.pars.some((v) => v != null) && known.pars?.length === holes) p.pars = [...known.pars];
@@ -167,18 +189,23 @@ export function validate(p: Parsed): Issue[] {
 
   const si = p.strokeIndex;
   const siRead = si.filter((v) => v != null).length;
+  // Some 9-hole courses print a stroke index drawn from 1–18 (e.g. all odd
+  // numbers) because the nine is designed to be played twice for an 18-hole
+  // round. That's a legitimate printed card, not a misread — only the
+  // holes-vs-max range differs, so allow up to 18 for a 9-hole card too.
+  const siMax = n === 9 ? 18 : n;
   if (siRead === 0) out.push({ t: "si", m: "No stroke index read. Without it, blow-up holes can't be capped — type it in if the card has one." });
   else if (siRead < n) out.push({ t: "si", m: `${n - siRead} stroke index ${n - siRead === 1 ? "value is" : "values are"} missing.` });
   else {
     const seen = new Set<number>();
     let dup = 0, range = 0;
     for (const v of si) {
-      if (v! < 1 || v! > n || !Number.isInteger(v)) range++;
+      if (v! < 1 || v! > siMax || !Number.isInteger(v)) range++;
       else if (seen.has(v!)) dup++;
       else seen.add(v!);
     }
-    if (range) out.push({ t: "si", m: `${range} stroke index ${range === 1 ? "value is" : "values are"} outside 1–${n}.` });
-    if (dup) out.push({ t: "si", m: `Stroke index has ${dup} duplicate${dup === 1 ? "" : "s"} — each of 1–${n} should appear once.` });
+    if (range) out.push({ t: "si", m: `${range} stroke index ${range === 1 ? "value is" : "values are"} outside 1–${siMax}.` });
+    if (dup) out.push({ t: "si", m: `Stroke index has ${dup} duplicate${dup === 1 ? "" : "s"} — each should appear once.` });
   }
 
   p.players.forEach((pl, i) => {
@@ -208,3 +235,22 @@ export function validate(p: Parsed): Issue[] {
 }
 
 export const serious = (issues: Issue[]) => issues.filter((i) => i.t !== "note");
+
+/**
+ * The cap engine needs a 9-hole card's stroke index as a plain 1–9 relative
+ * ranking. Some real cards instead print values drawn from 1–18 (commonly
+ * all-odd) because the nine doubles as an 18-hole loop. Convert those to
+ * their rank order before they're stored as a course's canonical stroke
+ * index — what's shown on the review screen stays exactly what's printed;
+ * this only runs once, at save time. A no-op on a card that's already 1–9.
+ */
+export function normaliseStrokeIndexForStorage(si: (number | null)[], holes: number): (number | null)[] {
+  if (holes !== 9 || si.length !== 9) return si;
+  const vals = si.filter((v): v is number => v != null);
+  if (vals.length !== 9) return si; // leave partial cards for the user to finish
+  if (!vals.every((v) => Number.isInteger(v) && v >= 1 && v <= 18)) return si;
+  if (new Set(vals).size !== 9) return si; // duplicates — leave for the checksum to flag
+  if (vals.every((v) => v <= 9)) return si; // already a plain 1–9 index
+  const rank = new Map([...vals].sort((a, b) => a - b).map((v, i) => [v, i + 1]));
+  return si.map((v) => (v == null ? null : rank.get(v)!));
+}

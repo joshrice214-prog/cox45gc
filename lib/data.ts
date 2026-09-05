@@ -1,6 +1,7 @@
 import { supabase } from "./supabase";
 import type { AppData, Course, GolfEvent, Player, Round, RoundScore, RsvpStatus } from "./types";
 import { playerResults } from "./stats";
+import { normaliseStrokeIndexForStorage } from "./scorecard";
 
 export async function loadAll(): Promise<AppData> {
   const sb = supabase();
@@ -83,7 +84,7 @@ export async function saveRound(input: SaveRoundInput, data: AppData): Promise<s
     name: input.course.name.trim(),
     holes: input.course.holes,
     pars: input.course.pars,
-    stroke_index: input.course.strokeIndex.map((v) => (v == null ? null : v)),
+    stroke_index: normaliseStrokeIndexForStorage(input.course.strokeIndex, input.course.holes),
     course_rating: input.course.courseRating,
     slope: input.course.slope,
   };
