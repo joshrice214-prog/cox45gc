@@ -62,6 +62,16 @@ Since rounds can be backdated, it's easy to upload the same card twice (two peop
 
 Matching happens client-side against the rounds already loaded (`data.rounds`), on the course name as typed (case/whitespace-insensitive) rather than a resolved course id, since the course isn't created or matched by id until save time. Player names are compared the same way, before they're turned into player ids.
 
+## Guard rails worth knowing about
+
+- **A course's pars, stroke index, rating and slope are set by the first card and then only ever have blanks filled in.** A later card that disagrees shows a warning on the review screen with a checkbox to update the record — nothing rewrites a course silently, because every earlier round at that course depends on it.
+- **A name that isn't on the roster asks before adding a member**, so a misread name can't create a phantom player.
+- **A partly-read card can't be saved with a made-up total.** Either every hole is filled in, or the row is cleared and the printed total used.
+- **Dates are parsed day-first** (`04/05/2026` is 4 May). The reader transcribes the date as printed; the app does the parsing.
+- **The second read never drops what the first one got.** It's merged over the first attempt, not swapped in.
+- **"What the reader actually saw"** at the bottom of every review screen shows the raw model output, for when a read looks wrong.
+- Rating/slope lookup online is a button on the review screen, not something that runs on every read.
+
 ## Tests
 
 `npm test` runs the engine, validation, and stats suites. `npm run typecheck` and `npm run build` both pass clean.

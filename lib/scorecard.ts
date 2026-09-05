@@ -13,6 +13,10 @@ export interface ParsedPlayer {
 export interface Parsed {
   course: string;
   date: string;
+  /** the date exactly as the reader transcribed it, before we parsed it */
+  dateRaw: string | null;
+  /** false when dateRaw was present but couldn't be parsed (date is then today's, and flagged) */
+  dateOk: boolean;
   holes: 9 | 18;
   tee: string | null;
   pars: (number | null)[];
@@ -30,11 +34,50 @@ export interface Parsed {
 }
 
 export interface Issue {
-  t: "par" | "si" | "note" | `p${number}`;
+  t: "par" | "si" | "date" | "rating" | "note" | `p${number}`;
   m: string;
 }
 
 export const sum = (a: (number | null)[]) => a.reduce<number>((s, v) => s + (v ?? 0), 0);
+
+/**
+ * Course names come off cards and screenshots with all sorts of decoration:
+ * "EDWALTON GOLF CLUB (EDWALTON (9 HOLES))", "Edwalton GC - Yellow tees".
+ * Everything after the first bracket or dash is a qualifier, not the name.
+ * Used for matching only — the stored name keeps its original casing.
+ */
+export function canonicalCourseName(name: string): string {
+  return name
+    .replace(/\s*[\(\[].*$/, "")     // drop "(9 holes)", "(Yellow)" etc and anything after
+    .replace(/\s+[-–—]\s+.*$/, "")    // drop " - Yellow tees"
+    .replace(/\b(golf\s+club|golf\s+course|g\.?c\.?)\b/gi, "")
+    .replace(/[^a-z0-9]+/gi, " ")
+    .trim()
+    .toLowerCase();
+}
+
+/** Human-facing version of the same clean-up: strips qualifiers but keeps the casing. */
+export function tidyCourseName(name: string): string {
+  return name.replace(/\s*[\(\[].*$/, "").replace(/\s+[-–—]\s+.*$/, "").replace(/\s+/g, " ").trim();
+}
+
+export function findCourse<T extends { name: string; holes?: number | null }>(courses: T[], name: string, holes?: number | null): T | undefined {
+  const cn = canonicalCourseName(name);
+  if (!cn) return undefined;
+  const same = courses.filter((c) => holes == null || c.holes == null || c.holes === holes);
+  return same.find((c) => canonicalCourseName(c.name) === cn);
+}
+
+/** A near miss worth offering as "did you mean" — one canonical name starts with the other. */
+export function suggestCourse<T extends { name: string; holes?: number | null }>(courses: T[], name: string, holes?: number | null): T | undefined {
+  const cn = canonicalCourseName(name);
+  if (cn.length < 4) return undefined;
+  const same = courses.filter((c) => holes == null || c.holes == null || c.holes === holes);
+  return same.find((c) => {
+    const k = canonicalCourseName(c.name);
+    return k !== cn && (k.startsWith(cn) || cn.startsWith(k));
+  });
+}
 
 export function visionPrompt(names: string[], courses: string[]): string {
   return `You are reading a golf scorecard. It may be a photo of a paper card or a screenshot from a golf app (18Birdies, Golfshot, Hole19, etc). If several images are given, they are pages of the SAME card (usually front nine and back nine) — merge them into one result.
@@ -74,22 +117,46 @@ ${names.length ? `- Expected player names, match to these ONLY where a name is a
 ${courses.length ? `- Courses played before, match the course name to one of these if it fits: ${courses.join(", ")}.` : ""}`;
 }
 
-export function secondPassPrompt(first: Parsed, problems: Issue[]): string {
-  return `Here is a first attempt at reading this scorecard, and the problems found with it:
+/**
+ * The second pass is a fresh API call with no memory of the first, so it has
+ * to be given the complete first attempt and the complete schema — otherwise
+ * it can only return the fields it was shown, and anything else (date,
+ * rating, slope, tee) silently disappears. Even so, the caller merges the
+ * result over the first attempt rather than replacing it (see mergeSecondPass).
+ */
+export function secondPassPrompt(firstRaw: unknown, problems: Issue[]): string {
+  return `Here is a first attempt at reading this scorecard — the complete JSON — and the problems found with it:
 
-${JSON.stringify({
-  course: first.course,
-  holes: first.holes,
-  pars: first.pars,
-  strokeIndex: first.strokeIndex,
-  parTotal: first.parTotal,
-  players: first.players.map((p) => ({ name: p.name, scores: p.scores, total: p.printed })),
-})}
+${JSON.stringify(firstRaw)}
 
 Problems:
 ${problems.map((p) => "- " + p.m).join("\n")}
 
-Look at the image again and focus only on the rows and holes involved in those problems. Correct them. Where the hole-by-hole strokes disagree with the printed total, trust whichever the image actually shows and leave the other as null rather than forcing them to match. Return the full corrected JSON in exactly the same schema as before, ONLY the JSON.`;
+Look at the image again and correct only the rows and holes involved in those problems. Every other field (course, date, tee, courseRating, slope, pars, strokeIndex, out/in/total, the other players) must be carried over from the first attempt exactly as it is unless the image clearly shows it was wrong. Where hole-by-hole strokes disagree with a printed total, trust whichever the image actually shows and leave the other as null rather than forcing them to match.
+
+Return the complete corrected JSON in this exact schema (every key present), ONLY the JSON, no fences, no commentary:
+{"course":string|null,"date":string|null,"holes":9|18,"tee":string|null,
+"pars":[9 or 18 numbers],"strokeIndex":[9 or 18 numbers or null],"parOut":number|null,"parIn":number|null,"parTotal":number|null,
+"courseRating":number|null,"slope":number|null,
+"players":[{"name":string,"scores":[numbers or null],"out":number|null,"in":number|null,"total":number|null,"confidence":"high"|"medium"|"low"}],
+"unreadable":[strings]}`;
+}
+
+/**
+ * Overlay the second attempt on the first at the raw-JSON level: a field the
+ * second pass left null/missing/empty keeps the first pass's value. Players
+ * are taken from the second pass only if it returned any at all.
+ */
+export function mergeSecondPass(first: unknown, second: unknown): Record<string, unknown> {
+  const a = (first ?? {}) as Record<string, unknown>;
+  const b = (second ?? {}) as Record<string, unknown>;
+  const out: Record<string, unknown> = { ...a };
+  const empty = (v: unknown) => v == null || v === "" || (Array.isArray(v) && (v.length === 0 || v.every((x) => x == null)));
+  for (const k of ["course", "date", "holes", "tee", "pars", "strokeIndex", "parOut", "parIn", "parTotal", "courseRating", "slope", "unreadable"]) {
+    if (!empty(b[k])) out[k] = b[k];
+  }
+  if (Array.isArray(b.players) && b.players.length) out.players = b.players;
+  return out;
 }
 
 export function extractJSON(txt: string): unknown {
@@ -156,9 +223,14 @@ export function normalise(raw: unknown, knownPlayers: string[], knownCourses: { 
     while (out.length < holes) out.push(fill);
     return out;
   };
+  const today = new Date().toISOString().slice(0, 10);
+  const dateRaw = r.date == null || String(r.date).trim() === "" ? null : String(r.date).trim();
+  const parsedDate = dateRaw ? parseCardDate(dateRaw, "") : "";
   const p: Parsed = {
-    course: String(r.course ?? "").trim(),
-    date: parseCardDate(r.date == null ? null : String(r.date), new Date().toISOString().slice(0, 10)),
+    course: tidyCourseName(String(r.course ?? "")),
+    date: parsedDate || today,
+    dateRaw,
+    dateOk: dateRaw == null ? true : parsedDate !== "",
     holes,
     tee: r.tee ? String(r.tee) : null,
     pars: pad(parsIn, null),
@@ -194,7 +266,7 @@ export function normalise(raw: unknown, knownPlayers: string[], knownCourses: { 
         in: num(pl.in),
         printed,
         confidence: (["high", "medium", "low"].includes(String(pl.confidence)) ? pl.confidence : "medium") as ParsedPlayer["confidence"],
-        gross: filled === holes ? sum(scores) : printed ?? (filled ? sum(scores) : null),
+        gross: filled === holes ? sum(scores) : printed, // never sum a partial card
       };
     })
     .filter((pl) => pl.name || pl.gross);
@@ -208,7 +280,7 @@ export function normalise(raw: unknown, knownPlayers: string[], knownCourses: { 
   }
   if (!p.parTotal && p.pars.some((v) => v != null)) p.parTotal = sum(p.pars);
 
-  const known = knownCourses.find((c) => c.name.toLowerCase().trim() === p.course.toLowerCase().trim() && (c.holes == null || c.holes === holes));
+  const known = findCourse(knownCourses, p.course, holes);
   if (known) {
     p.course = known.name;
     if (p.courseRating == null && p.slope == null && (known.course_rating != null || known.slope != null)) p.ratingSource = "course";
@@ -231,6 +303,12 @@ export function matchName(raw: string, known: string[]): string {
 export function validate(p: Parsed): Issue[] {
   const out: Issue[] = [];
   const n = p.holes;
+
+  if (!p.dateOk) out.push({ t: "date", m: `Couldn't make sense of the date "${p.dateRaw}" — showing today's date instead. Check it.` });
+  else if (p.dateRaw == null) out.push({ t: "note", m: "No date was found on the card — showing today's date. Check it." });
+  if (p.courseRating == null || p.slope == null) {
+    out.push({ t: "note", m: p.courseRating == null && p.slope == null ? "No course rating or slope on the card. The round will save but won't count for handicap until they're filled in — try the look-up button below." : `Only ${p.courseRating == null ? "slope" : "course rating"} was read — the round needs both to count.` });
+  }
 
   const parsRead = p.pars.filter((v) => v != null).length;
   if (parsRead < n) out.push({ t: "par", m: `Only ${parsRead} of ${n} pars were read.` });
@@ -309,4 +387,23 @@ export function normaliseStrokeIndexForStorage(si: (number | null)[], holes: num
   if (vals.every((v) => v <= 9)) return si; // already a plain 1–9 index
   const rank = new Map([...vals].sort((a, b) => a - b).map((v, i) => [v, i + 1]));
   return si.map((v) => (v == null ? null : rank.get(v)!));
+}
+
+/**
+ * Hard stops before a round can be saved — shared by Add Round and Import
+ * so neither screen can slip something past the other. Returns null when
+ * it's fine to save.
+ */
+export function preSaveError(p: Parsed): string | null {
+  if (!p.course.trim()) return "Give the course a name so the round can be saved.";
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(p.date)) return "The date isn't valid.";
+  if (p.pars.length !== p.holes || p.pars.some((v) => v == null || v < 3 || v > 6)) return "Every hole needs a par between 3 and 6.";
+  const named = p.players.filter((pl) => pl.name.trim());
+  if (!named.length) return "At least one player needs a name and a score.";
+  for (const pl of named) {
+    const filled = pl.scores.filter((v) => v != null).length;
+    if (filled > 0 && filled < p.holes) return `${pl.name}: ${p.holes - filled} hole${p.holes - filled === 1 ? " is" : "s are"} blank. Fill them in, or clear the row and enter the total only.`;
+    if (!pl.gross) return `${pl.name} has no score.`;
+  }
+  return null;
 }

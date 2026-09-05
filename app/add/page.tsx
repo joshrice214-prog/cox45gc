@@ -3,10 +3,11 @@ import { useRouter } from "next/navigation";
 import { useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useApp } from "@/components/AppProvider";
-import { Review, blankPlayer } from "@/components/RoundReview";
+import { Review, blankPlayer, type SaveOptions } from "@/components/RoundReview";
+import { appKeyHeaders } from "@/lib/anthropic";
 import { saveRound } from "@/lib/data";
 import { prepScorecardImage } from "@/lib/image";
-import { validate, type Issue, type Parsed } from "@/lib/scorecard";
+import { preSaveError, validate, type Issue, type Parsed } from "@/lib/scorecard";
 import { today } from "@/lib/stats";
 
 type Shot = { b64: string; mime: string; preview: string };
@@ -21,6 +22,7 @@ export default function AddRound() {
   const [issues, setIssues] = useState<Issue[]>([]);
   const [secondPass, setSecondPass] = useState(false);
   const [fromPhoto, setFromPhoto] = useState(false);
+  const [raw, setRaw] = useState<{ first: string; second: string | null; model?: string } | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
   if (!data) return null;
@@ -51,7 +53,7 @@ export default function AddRound() {
     try {
       const res = await fetch("/api/read-scorecard", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...appKeyHeaders() },
         body: JSON.stringify({
           images: shots.map((s) => ({ mime: s.mime, b64: s.b64 })),
           players: data.players.map((p) => p.name),
@@ -64,6 +66,7 @@ export default function AddRound() {
       setPending(j.parsed);
       setIssues(j.issues);
       setSecondPass(j.secondPassDone);
+      setRaw(j.raw ? { ...j.raw, model: j.model } : null);
       setFromPhoto(true);
     } catch (e) {
       setErr(`Couldn't read that one${e instanceof Error && e.message ? ` (${e.message})` : ""}. A straighter, brighter shot of the whole card usually fixes it — or type the round in by hand.`);
@@ -85,6 +88,8 @@ export default function AddRound() {
       parTotal: 72,
       courseRating: null,
       slope: null,
+      dateRaw: null,
+      dateOk: true,
       players: data.players.slice(0, 4).map((p) => blankPlayer(p.name, 18)),
       unreadable: [],
       ratingSource: null,
@@ -92,6 +97,7 @@ export default function AddRound() {
     });
     setIssues([]);
     setSecondPass(false);
+    setRaw(null);
     setFromPhoto(false);
   };
 
@@ -104,6 +110,7 @@ export default function AddRound() {
         fromPhoto={fromPhoto}
         busy={busy}
         err={err}
+        rawOutput={raw}
         onChange={(np) => {
           setPending(np);
           setIssues(validate(np));
@@ -114,12 +121,11 @@ export default function AddRound() {
           setIssues([]);
           setErr("");
         }}
-        onSave={async (p, eventId) => {
+        onSave={async (p, eventId, opts: SaveOptions) => {
           setErr("");
-          if (!p.course.trim()) return setErr("Give the course a name so the round can be saved.");
+          const stop = preSaveError(p);
+          if (stop) return setErr(stop);
           const valid = p.players.filter((x) => x.name.trim() && x.gross);
-          if (!valid.length) return setErr("At least one player needs a name and a score.");
-          if (p.pars.some((v) => v == null)) return setErr("Every hole needs a par.");
           setBusy("Saving…");
           try {
             await saveRound(
@@ -127,6 +133,7 @@ export default function AddRound() {
                 course: { name: p.course, holes: p.holes, pars: p.pars as number[], strokeIndex: p.strokeIndex, courseRating: p.courseRating, slope: p.slope },
                 date: p.date,
                 eventId,
+                overwriteCourse: opts.overwriteCourse,
                 players: valid.map((x) => ({ name: x.name.trim(), scores: x.scores, gross: x.gross! })),
               },
               data,

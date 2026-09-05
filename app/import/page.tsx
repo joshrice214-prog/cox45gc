@@ -2,10 +2,11 @@
 import Link from "next/link";
 import { useRef, useState } from "react";
 import { useApp } from "@/components/AppProvider";
-import { Review } from "@/components/RoundReview";
+import { Review, type SaveOptions } from "@/components/RoundReview";
+import { appKeyHeaders } from "@/lib/anthropic";
 import { saveRound } from "@/lib/data";
 import { prepScorecardImage } from "@/lib/image";
-import { validate, type Issue, type Parsed } from "@/lib/scorecard";
+import { preSaveError, validate, type Issue, type Parsed } from "@/lib/scorecard";
 
 type Shot = { b64: string; mime: string; preview: string; name: string };
 type Status = "queued" | "reading" | "ready" | "failed" | "saved" | "skipped";
@@ -15,6 +16,7 @@ interface Item {
   parsed: Parsed | null;
   issues: Issue[];
   secondPass: boolean;
+  raw: { first: string; second: string | null; model?: string } | null;
   error: string | null;
 }
 
@@ -47,9 +49,9 @@ export default function BulkImport() {
     for (const f of files) {
       try {
         const shot = { ...(await prepScorecardImage(f)), name: f.name };
-        added.push({ shot, status: "queued", parsed: null, issues: [], secondPass: false, error: null });
+        added.push({ shot, status: "queued", parsed: null, issues: [], secondPass: false, raw: null, error: null });
       } catch {
-        added.push({ shot: { b64: "", mime: "", preview: "", name: f.name }, status: "failed", parsed: null, issues: [], secondPass: false, error: "Couldn't open this image." });
+        added.push({ shot: { b64: "", mime: "", preview: "", name: f.name }, status: "failed", parsed: null, issues: [], secondPass: false, raw: null, error: "Couldn't open this image." });
       }
     }
     setItems((prev) => [...prev, ...added]);
@@ -62,7 +64,7 @@ export default function BulkImport() {
     try {
       const res = await fetch("/api/read-scorecard", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...appKeyHeaders() },
         body: JSON.stringify({
           images: [{ mime: it.shot.mime, b64: it.shot.b64 }],
           players: data.players.map((p) => p.name),
@@ -72,7 +74,7 @@ export default function BulkImport() {
       });
       const j = await res.json();
       if (!res.ok) throw new Error(j.error || "read failed");
-      return { ...it, status: "ready", parsed: j.parsed, issues: j.issues, secondPass: j.secondPassDone };
+      return { ...it, status: "ready", parsed: j.parsed, issues: j.issues, secondPass: j.secondPassDone, raw: j.raw ? { ...j.raw, model: j.model } : null };
     } catch (e) {
       return { ...it, status: "failed", error: e instanceof Error ? e.message : "Couldn't read this one" };
     }
@@ -100,13 +102,23 @@ export default function BulkImport() {
 
   const advance = () => setCursor((c) => Math.min(items.length, c + 1));
 
-  const saveCurrent = async (p: Parsed) => {
+  const saveCurrent = async (p: Parsed, eventId: string | null, opts: SaveOptions) => {
+    const stop = preSaveError(p);
+    if (stop) {
+      toast(stop);
+      return;
+    }
     setBusy("Saving…");
     try {
       const valid = p.players.filter((x) => x.name.trim() && x.gross);
-      if (!p.course.trim() || !valid.length) throw new Error("Needs at least a course and one player's score");
       await saveRound(
-        { course: { name: p.course, holes: p.holes, pars: p.pars as number[], strokeIndex: p.strokeIndex, courseRating: p.courseRating, slope: p.slope }, date: p.date, eventId: null, players: valid.map((x) => ({ name: x.name.trim(), scores: x.scores, gross: x.gross! })) },
+        {
+          course: { name: p.course, holes: p.holes, pars: p.pars as number[], strokeIndex: p.strokeIndex, courseRating: p.courseRating, slope: p.slope },
+          date: p.date,
+          eventId, // same-day event auto-link, same as Add Round
+          overwriteCourse: opts.overwriteCourse,
+          players: valid.map((x) => ({ name: x.name.trim(), scores: x.scores, gross: x.gross! })),
+        },
         data,
       );
       setItems((prev) => prev.map((it, k) => (k === cursor ? { ...it, status: "saved" } : it)));
@@ -144,12 +156,13 @@ export default function BulkImport() {
           fromPhoto
           busy={busy}
           err=""
+          rawOutput={current.raw}
           onChange={(np) => setItems((prev) => prev.map((it, k) => (k === cursor ? { ...it, parsed: np, issues: validate(np) } : it)))}
           onCancel={() => {
             setItems((prev) => prev.map((it, k) => (k === cursor ? { ...it, status: "skipped" } : it)));
             advance();
           }}
-          onSave={(p) => saveCurrent(p)}
+          onSave={(p, eventId, opts) => saveCurrent(p, eventId, opts)}
         />
         <button className="btn ghost" style={{ marginTop: 10 }} onClick={() => { setItems((prev) => prev.map((it, k) => (k === cursor ? { ...it, status: "skipped" } : it))); advance(); }}>
           Skip this one for now

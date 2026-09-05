@@ -1,5 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { extractJSON } from "./scorecard";
+import { MODEL } from "./anthropic";
 
 export interface CourseLookup {
   found: boolean;
@@ -22,7 +23,7 @@ export async function lookupCourseRating(name: string, holes: 9 | 18, tee?: stri
   if (!apiKey || !name.trim()) return NOT_FOUND;
 
   const client = new Anthropic({ apiKey });
-  const model = process.env.ANTHROPIC_MODEL || "claude-sonnet-4-6";
+  const model = MODEL;
   const prompt = `Find the USGA/WHS Course Rating and Slope Rating for this golf course${holes === 9 ? "'s 9-hole (or front/back 9) card" : ""}:
 
 Course: "${name}"

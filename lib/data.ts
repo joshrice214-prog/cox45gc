@@ -1,7 +1,7 @@
 import { supabase } from "./supabase";
 import type { AppData, Course, GolfEvent, Player, Round, RoundScore, RsvpStatus } from "./types";
 import { playerResults } from "./stats";
-import { normaliseStrokeIndexForStorage } from "./scorecard";
+import { findCourse, normaliseStrokeIndexForStorage } from "./scorecard";
 
 export async function loadAll(): Promise<AppData> {
   const sb = supabase();
@@ -75,20 +75,33 @@ export interface SaveRoundInput {
   date: string;
   eventId?: string | null;
   players: { name: string; scores: (number | null)[]; gross: number }[];
+  /**
+   * By default an existing course only has its blanks filled in — one card
+   * must never silently rewrite the pars/SI/rating every earlier round at that
+   * course depends on. The review screen sets this when someone has looked at
+   * the difference and chosen the card's values.
+   */
+  overwriteCourse?: boolean;
 }
+
+const fullPars = (a: (number | null)[] | undefined, holes: number) => !!a && a.length === holes && a.every((v) => v != null);
 
 export async function saveRound(input: SaveRoundInput, data: AppData): Promise<string> {
   const sb = supabase();
-  // course — upsert by name; keep the course's latest known pars/SI/rating
+  const existing = findCourse(data.courses, input.course.name, input.course.holes);
+  const cardSI = normaliseStrokeIndexForStorage(input.course.strokeIndex, input.course.holes);
+  const keep = !!existing && !input.overwriteCourse;
   const coursePayload = {
-    name: input.course.name.trim(),
+    name: existing?.name ?? input.course.name.trim(),
     holes: input.course.holes,
-    pars: input.course.pars,
-    stroke_index: normaliseStrokeIndexForStorage(input.course.strokeIndex, input.course.holes),
-    course_rating: input.course.courseRating,
-    slope: input.course.slope,
+    pars: keep && fullPars(existing.pars, input.course.holes) ? existing.pars : input.course.pars,
+    stroke_index: keep && fullPars(existing.stroke_index, input.course.holes) ? existing.stroke_index : cardSI,
+    course_rating: keep ? existing.course_rating ?? input.course.courseRating : input.course.courseRating ?? existing?.course_rating ?? null,
+    slope: keep ? existing.slope ?? input.course.slope : input.course.slope ?? existing?.slope ?? null,
   };
-  const { data: course, error: ce } = await sb.from("courses").upsert(coursePayload, { onConflict: "name,holes" }).select().single();
+  const { data: course, error: ce } = existing
+    ? await sb.from("courses").update(coursePayload).eq("id", existing.id).select().single()
+    : await sb.from("courses").insert(coursePayload).select().single();
   if (ce) throw new Error(ce.message);
 
   // players — create any new names

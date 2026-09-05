@@ -3,8 +3,14 @@ import { useMemo, useState } from "react";
 import { useApp } from "@/components/AppProvider";
 import { Sheet } from "@/components/ui";
 import { findDuplicateRounds, strongDuplicates, type DuplicateMatch } from "@/lib/duplicates";
-import { sum, validate, type Issue, type Parsed, type ParsedPlayer } from "@/lib/scorecard";
+import { findCourse, preSaveError, suggestCourse, sum, type Issue, type Parsed, type ParsedPlayer } from "@/lib/scorecard";
+import { appKeyHeaders } from "@/lib/anthropic";
 import { fmtDate } from "@/lib/stats";
+
+export interface SaveOptions {
+  /** the person reviewing chose the card's pars/SI/rating over what's stored for the course */
+  overwriteCourse: boolean;
+}
 
 export function blankPlayer(name: string, holes: number): ParsedPlayer {
   return { name, scores: Array(holes).fill(null), out: null, in: null, printed: null, confidence: "high", gross: null };
@@ -12,18 +18,23 @@ export function blankPlayer(name: string, holes: number): ParsedPlayer {
 
 /* ---------------- review ---------------- */
 
-export function Review({ p, issues, secondPass, fromPhoto, busy, err, onChange, onCancel, onSave }: {
+export function Review({ p, issues, secondPass, fromPhoto, busy, err, rawOutput, onChange, onCancel, onSave }: {
   p: Parsed;
   issues: Issue[];
   secondPass: boolean;
   fromPhoto: boolean;
   busy: string | null;
   err: string;
+  /** what the vision model actually returned, for when a read looks wrong */
+  rawOutput?: { first: string; second: string | null; model?: string } | null;
   onChange: (p: Parsed) => void;
   onCancel: () => void;
-  onSave: (p: Parsed, eventId: string | null) => void;
+  onSave: (p: Parsed, eventId: string | null, opts: SaveOptions) => void;
 }) {
   const { data } = useApp();
+  const [localErr, setLocalErr] = useState("");
+  const [overwriteCourse, setOverwriteCourse] = useState(false);
+  const [newMembers, setNewMembers] = useState<string[] | null>(null);
   const n = p.holes;
   const par = sum(p.pars);
   const coxCR = p.courseRating != null ? (p.courseRating + n * 2).toFixed(1) : null;
@@ -32,7 +43,7 @@ export function Review({ p, issues, secondPass, fromPhoto, busy, err, onChange, 
     if (!p.course.trim()) return;
     setLooking(true);
     try {
-      const res = await fetch("/api/lookup-course", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: p.course, holes: n, tee: p.tee }) });
+      const res = await fetch("/api/lookup-course", { method: "POST", headers: { "Content-Type": "application/json", ...appKeyHeaders() }, body: JSON.stringify({ name: p.course, holes: n, tee: p.tee }) });
       const j = await res.json();
       if (j.found) {
         onChange({
@@ -55,15 +66,28 @@ export function Review({ p, issues, secondPass, fromPhoto, busy, err, onChange, 
   const linkedEvent = eventTouched ? eventId : sameDayEvents[0]?.id ?? null;
   const [dupWarning, setDupWarning] = useState<DuplicateMatch[] | null>(null);
 
+  const known = data ? findCourse(data.courses, p.course, n) : undefined;
+  const suggestion = data && !known ? suggestCourse(data.courses, p.course, n) : undefined;
+  const courseDiffers = !!known && (
+    (known.pars.length === n && known.pars.every((v) => v != null) && known.pars.some((v, i) => p.pars[i] != null && p.pars[i] !== v)) ||
+    (known.course_rating != null && p.courseRating != null && known.course_rating !== p.courseRating) ||
+    (known.slope != null && p.slope != null && known.slope !== p.slope)
+  );
+
+  const rosterMissing = (pl: ParsedPlayer) => !!pl.name.trim() && !data?.players.some((x) => x.name.toLowerCase() === pl.name.trim().toLowerCase());
+  const commit = () => onSave(p, linkedEvent, { overwriteCourse });
+
   const trySave = () => {
+    setLocalErr("");
+    const stop = preSaveError(p);
+    if (stop) return setLocalErr(stop);
     if (data) {
       const matches = strongDuplicates(findDuplicateRounds(data, p.course, p.holes, p.date, p.players.map((pl) => pl.name)));
-      if (matches.length) {
-        setDupWarning(matches);
-        return;
-      }
+      if (matches.length) return setDupWarning(matches);
+      const fresh = [...new Set(p.players.filter(rosterMissing).map((pl) => pl.name.trim()))];
+      if (fresh.length) return setNewMembers(fresh);
     }
-    onSave(p, linkedEvent);
+    commit();
   };
 
   const set = <K extends keyof Parsed>(k: K, v: Parsed[K]) => onChange({ ...p, [k]: v });
@@ -81,22 +105,23 @@ export function Review({ p, issues, secondPass, fromPhoto, busy, err, onChange, 
   const setSI = (i: number, v: number | null) => { const si = [...p.strokeIndex]; si[i] = v; set("strokeIndex", si); };
   const setPlayer = (i: number, pl: ParsedPlayer) => { const players = [...p.players]; players[i] = recompute(pl, n); set("players", players); };
   const pickCourse = (name: string) => {
-    const known = data?.courses.find((c) => c.name.toLowerCase() === name.trim().toLowerCase() && c.holes === n);
-    if (!known) return set("course", name);
+    const k = data ? findCourse(data.courses, name, n) : undefined;
+    if (!k) return set("course", name);
     onChange({
       ...p,
-      course: known.name,
-      courseRating: p.courseRating ?? known.course_rating,
-      slope: p.slope ?? known.slope,
-      pars: p.pars.every((v) => v == null) && known.pars.length === n ? [...known.pars] : p.pars,
-      strokeIndex: p.strokeIndex.every((v) => v == null) && known.stroke_index.length === n ? [...known.stroke_index] : p.strokeIndex,
+      course: k.name,
+      courseRating: p.courseRating ?? k.course_rating,
+      slope: p.slope ?? k.slope,
+      ratingSource: p.courseRating == null && p.slope == null && (k.course_rating != null || k.slope != null) ? "course" : p.ratingSource,
+      pars: p.pars.every((v) => v == null) && k.pars.length === n ? [...k.pars] : p.pars,
+      strokeIndex: p.strokeIndex.every((v) => v == null) && k.stroke_index.length === n ? [...k.stroke_index] : p.strokeIndex,
     });
   };
 
   return (
     <>
       <div className="sec-title" style={{ marginTop: 0 }}>Check it before it counts</div>
-      {err && <div className="err">{err}</div>}
+      {(err || localErr) && <div className="err">{err || localErr}</div>}
       {issues.length > 0 ? (
         <div className="warn">
           <b>{issues.length} thing{issues.length === 1 ? "" : "s"} worth a look</b>
@@ -112,6 +137,24 @@ export function Review({ p, issues, secondPass, fromPhoto, busy, err, onChange, 
           <input className="f" value={p.course} onChange={(e) => pickCourse(e.target.value)} placeholder="Course name" list="courselist" />
           <datalist id="courselist">{data?.courses.map((c) => <option key={c.id} value={c.name} />)}</datalist>
         </label>
+        {suggestion && (
+          <div className="suggest" style={{ marginTop: -4 }}>
+            <button onClick={() => pickCourse(suggestion.name)}>Did you mean “{suggestion.name}”? Tap to use it</button>
+          </div>
+        )}
+        {known && courseDiffers && (
+          <div className="warn" style={{ marginBottom: 12 }}>
+            This card's {[
+              known.pars.some((v, i) => p.pars[i] != null && p.pars[i] !== v) ? "pars" : null,
+              known.course_rating != null && p.courseRating != null && known.course_rating !== p.courseRating ? `rating (${p.courseRating} vs ${known.course_rating} on record)` : null,
+              known.slope != null && p.slope != null && known.slope !== p.slope ? `slope (${p.slope} vs ${known.slope} on record)` : null,
+            ].filter(Boolean).join(", ")} differ from what's on record for {known.name}. The record is what every earlier round at this course uses, so it's kept unless you say otherwise.
+            <label style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 8, cursor: "pointer" }}>
+              <input type="checkbox" checked={overwriteCourse} onChange={(e) => setOverwriteCourse(e.target.checked)} />
+              <span>This card is right — update the course record to match it</span>
+            </label>
+          </div>
+        )}
         <div className="grid2">
           <label className="f"><span>Date</span><input className="f" type="date" value={p.date} onChange={(e) => set("date", e.target.value)} /></label>
           <label className="f"><span>Holes</span>
@@ -210,7 +253,9 @@ export function Review({ p, issues, secondPass, fromPhoto, busy, err, onChange, 
               disabled={!!busy}
               onClick={() => {
                 setDupWarning(null);
-                onSave(p, linkedEvent);
+                const fresh = [...new Set(p.players.filter(rosterMissing).map((pl) => pl.name.trim()))];
+                if (fresh.length) return setNewMembers(fresh);
+                commit();
               }}
             >
               {busy ? <><span className="spinner" />{busy}</> : "Save anyway"}
@@ -218,13 +263,47 @@ export function Review({ p, issues, secondPass, fromPhoto, busy, err, onChange, 
           </div>
         </Sheet>
       )}
+
+      {newMembers && (
+        <Sheet
+          title={newMembers.length === 1 ? "New member?" : "New members?"}
+          sub={`${newMembers.join(", ")} ${newMembers.length === 1 ? "isn't" : "aren't"} on the roster yet.`}
+          onClose={() => setNewMembers(null)}
+        >
+          <div className="muted small" style={{ margin: "0 4px 14px", lineHeight: 1.55 }}>
+            Saving will add {newMembers.length === 1 ? "them" : "each of them"} to the club — leaderboard, events, the lot. If it's just a misspelling of someone who's already a member, cancel and fix the name instead.
+          </div>
+          <div className="row-btns">
+            <button className="btn ghost" onClick={() => setNewMembers(null)} disabled={!!busy}>Cancel</button>
+            <button className="btn" disabled={!!busy} onClick={() => { setNewMembers(null); commit(); }}>
+              {busy ? <><span className="spinner" />{busy}</> : `Add ${newMembers.length === 1 ? "member" : "members"} and save`}
+            </button>
+          </div>
+        </Sheet>
+      )}
+
+      {rawOutput && (
+        <details className="panel" style={{ marginTop: 14 }}>
+          <summary className="muted small" style={{ cursor: "pointer" }}>What the reader actually saw{rawOutput.model ? ` (${rawOutput.model})` : ""}</summary>
+          <pre style={{ whiteSpace: "pre-wrap", wordBreak: "break-word", fontSize: 11, color: "var(--cream-dim)", marginTop: 10 }}>{rawOutput.first}</pre>
+          {rawOutput.second && (
+            <>
+              <div className="muted small" style={{ marginTop: 10 }}>Second look:</div>
+              <pre style={{ whiteSpace: "pre-wrap", wordBreak: "break-word", fontSize: 11, color: "var(--cream-dim)", marginTop: 6 }}>{rawOutput.second}</pre>
+            </>
+          )}
+        </details>
+      )}
     </>
   );
 }
 
 function recompute(pl: ParsedPlayer, n: number): ParsedPlayer {
   const filled = pl.scores.filter((v) => v != null).length;
-  return { ...pl, gross: filled === n ? sum(pl.scores) : filled ? sum(pl.scores) : pl.printed ?? null };
+  // A partly-filled card must never produce a total from the holes that happen
+  // to be present — that understates the score and it would feed the handicap.
+  // Full card → sum of holes. Anything less → the printed total, or nothing.
+  return { ...pl, gross: filled === n ? sum(pl.scores) : pl.printed ?? null };
 }
 function mismatchText(pl: ParsedPlayer, n: number) {
   const s = sum(pl.scores), filled = pl.scores.filter((v) => v != null).length;

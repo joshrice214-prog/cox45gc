@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { extractJSON, normalise, validate, serious, normaliseStrokeIndexForStorage, parseCardDate } from "../lib/scorecard";
+import { extractJSON, normalise, validate, serious, normaliseStrokeIndexForStorage, parseCardDate, mergeSecondPass, canonicalCourseName, findCourse, suggestCourse, tidyCourseName, preSaveError } from "../lib/scorecard";
 
 const PARS = [4, 4, 3, 5, 4, 4, 3, 4, 5, 4, 4, 3, 5, 4, 4, 3, 4, 5];
 const SI = [7, 3, 15, 1, 11, 5, 17, 9, 13, 8, 2, 16, 4, 12, 6, 18, 10, 14];
@@ -18,7 +18,7 @@ test("clean card validates with no issues", () => {
   const p = normalise(raw, ["Josh", "Owen"], []);
   assert.equal(p.players[0].name, "Josh");
   assert.equal(p.players[0].gross, 90);
-  assert.deepEqual(validate(p), []);
+  assert.deepEqual(serious(validate(p)), []); // only the "no rating on the card" note remains, by design
 });
 
 test("checksums catch bad totals, pars and stroke index", () => {
@@ -131,4 +131,81 @@ test("importer's name is not applied when the card already names its one player"
   const raw = { holes: 9, pars: [5, 4, 4, 3, 5, 4, 4, 3, 4], players: [{ name: "Ed", scores: Array(9).fill(5), total: 45 }] };
   const p = normalise(raw, ["Josh", "Ed"], [], "Josh");
   assert.equal(p.players[0].name, "Ed");
+});
+
+/* ---------- review round 2 ---------- */
+
+const P9 = [5, 4, 4, 3, 5, 4, 4, 3, 4];
+
+test("a partly-read card never produces a gross from the holes that happen to be present", () => {
+  const partial = { holes: 9, pars: P9, players: [{ name: "Josh", scores: [5, 4, null, 4, 5, null, 4, 3, 4], total: null }] };
+  assert.equal(normalise(partial, ["Josh"], []).players[0].gross, null);
+  const withPrinted = { holes: 9, pars: P9, players: [{ name: "Josh", scores: [5, 4, null, 4, 5, null, 4, 3, 4], total: 44 }] };
+  assert.equal(normalise(withPrinted, ["Josh"], []).players[0].gross, 44);
+});
+
+test("pre-save refuses a partial card, a blank par, a missing course", () => {
+  const ok = normalise({ course: "Edwalton", date: "14/09/2024", holes: 9, pars: P9, players: [{ name: "Josh", scores: P9.map((p) => p + 1), total: 45 }] }, ["Josh"], []);
+  assert.equal(preSaveError(ok), null);
+  const partial = { ...ok, players: [{ ...ok.players[0], scores: [5, null, 5, 4, 6, 5, 5, 4, 5], gross: 45 }] };
+  assert.match(preSaveError(partial)!, /1 hole is blank/);
+  const noPar = { ...ok, pars: [5, 4, null, 3, 5, 4, 4, 3, 4] };
+  assert.match(preSaveError(noPar)!, /par/);
+  assert.match(preSaveError({ ...ok, course: "" })!, /course a name/);
+});
+
+test("second pass merge keeps first-pass fields the second pass dropped", () => {
+  const first = { course: "Edwalton Golf Club", date: "14/09/2024", holes: 9, tee: "Yellow", pars: P9, strokeIndex: [5, 1, 3, 13, 11, 7, 17, 15, 9], courseRating: 35.4, slope: 121, players: [{ name: "", scores: [8, 5, 7, 7, 10, 8, 5, 6, 10], total: 66 }] };
+  const second = { course: "Edwalton Golf Club", holes: 9, pars: P9, strokeIndex: [5, 1, 3, 13, 11, 7, 17, 15, 9], players: [{ name: "", scores: [8, 5, 7, 7, 10, 8, 5, 6, 10], total: 66, confidence: "high" }] };
+  const merged = mergeSecondPass(first, second);
+  assert.equal(merged.date, "14/09/2024");
+  assert.equal(merged.courseRating, 35.4);
+  assert.equal(merged.slope, 121);
+  assert.equal(merged.tee, "Yellow");
+  const p = normalise(merged, ["Josh"], [], "Josh");
+  assert.equal(p.date, "2024-09-14");
+  assert.equal(p.courseRating, 35.4);
+  assert.equal(p.players[0].name, "Josh");
+});
+
+test("second pass merge does take corrections the second pass made", () => {
+  const first = { course: "X", date: "1/1/2025", holes: 9, pars: P9, strokeIndex: [3, 1, 2, 7, 6, 4, 9, 8, 5], courseRating: 35.4, slope: 121, players: [{ name: "Ed", scores: [5, 5, 5, 5, 5, 5, 5, 5, 9], total: 45 }] };
+  const second = { ...first, players: [{ name: "Ed", scores: [5, 5, 5, 5, 5, 5, 5, 5, 5], total: 45 }] };
+  const p = normalise(mergeSecondPass(first, second), [], []);
+  assert.equal(p.players[0].gross, 45);
+  assert.deepEqual(validate(p).filter((i) => i.t !== "note"), []);
+});
+
+test("course names match across the decoration cards put on them", () => {
+  assert.equal(canonicalCourseName("EDWALTON GOLF CLUB (EDWALTON (9 HOLES))"), "edwalton");
+  assert.equal(canonicalCourseName("Edwalton GC - Yellow tees"), "edwalton");
+  assert.equal(canonicalCourseName("Edwalton Golf Course"), "edwalton");
+  assert.equal(tidyCourseName("EDWALTON GOLF CLUB (EDWALTON (9 HOLES))"), "EDWALTON GOLF CLUB");
+  const courses = [{ id: "1", name: "Edwalton Golf Club", holes: 9 }, { id: "2", name: "Edwalton Golf Club", holes: 18 }, { id: "3", name: "Wollaton Park", holes: 18 }];
+  assert.equal(findCourse(courses, "edwalton golf club (9 holes)", 9)?.id, "1");
+  assert.equal(findCourse(courses, "Edwalton", 18)?.id, "2");
+  assert.equal(findCourse(courses, "Edwalton", 18)?.id, "2");
+  assert.equal(findCourse(courses, "Bramcote", 18), undefined);
+  assert.equal(suggestCourse(courses, "Wollaton", 18)?.id, "3");
+  assert.equal(suggestCourse(courses, "Wollaton Park", 18), undefined); // exact match isn't a suggestion
+});
+
+test("a read card resolves to the stored course name, and takes its rating when the card has none", () => {
+  const known = [{ name: "Edwalton Golf Club", holes: 9, pars: P9, stroke_index: [3, 1, 2, 7, 6, 4, 9, 8, 5], course_rating: 35.4, slope: 121 }];
+  const p = normalise({ course: "EDWALTON GOLF CLUB (EDWALTON (9 HOLES))", holes: 9, pars: P9, players: [] }, [], known);
+  assert.equal(p.course, "Edwalton Golf Club");
+  assert.equal(p.slope, 121);
+  assert.equal(p.ratingSource, "course");
+});
+
+test("unparseable or missing dates and missing ratings are said out loud", () => {
+  const bad = normalise({ holes: 9, pars: P9, date: "yesterday-ish", players: [] }, [], []);
+  assert.equal(bad.dateOk, false);
+  assert.match(validate(bad).find((i) => i.t === "date")!.m, /yesterday-ish/);
+  const none = normalise({ holes: 9, pars: P9, players: [] }, [], []);
+  assert.equal(none.dateOk, true);
+  assert.ok(validate(none).some((i) => i.t === "note" && /No date/.test(i.m)));
+  assert.ok(validate(none).some((i) => i.t === "note" && /rating/.test(i.m)));
+  // a missing rating is a note, not something that triggers a second read
+  assert.ok(!serious(validate(none)).some((i) => /rating/.test(i.m)));
 });

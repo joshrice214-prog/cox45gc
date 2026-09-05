@@ -25,7 +25,7 @@ export async function prepScorecardImage(file: File): Promise<{ b64: string; mim
     }
     ctx.putImageData(img, 0, 0);
   } catch {}
-  const url = c.toDataURL("image/jpeg", 0.92);
+  const url = c.toDataURL("image/jpeg", 0.85);
   bmp.close?.();
   return { b64: url.split(",")[1], mime: "image/jpeg", preview: url };
 }

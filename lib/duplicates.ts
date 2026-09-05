@@ -1,4 +1,5 @@
 import type { AppData, Course, Round } from "./types";
+import { findCourse } from "./scorecard";
 
 export interface DuplicateMatch {
   round: Round;
@@ -18,9 +19,8 @@ export interface DuplicateMatch {
  * resolved to player ids (that resolution only happens at save time).
  */
 export function findDuplicateRounds(data: AppData, courseName: string, holes: number, date: string, candidateNames: string[]): DuplicateMatch[] {
-  const cn = courseName.trim().toLowerCase();
-  if (!cn || !date) return [];
-  const course = data.courses.find((c) => c.name.trim().toLowerCase() === cn && c.holes === holes);
+  if (!courseName.trim() || !date) return [];
+  const course = findCourse(data.courses, courseName, holes);
   if (!course) return [];
 
   const wanted = new Set(candidateNames.map((n) => n.trim().toLowerCase()).filter(Boolean));
