@@ -25,7 +25,7 @@ interface Item {
  * recomputes from every round on record.
  */
 export default function BulkImport() {
-  const { data, refresh, toast } = useApp();
+  const { data, me, refresh, toast } = useApp();
   const [items, setItems] = useState<Item[]>([]);
   const [cursor, setCursor] = useState(0); // index of the round currently under review
   const [busy, setBusy] = useState<string | null>(null);
@@ -33,8 +33,15 @@ export default function BulkImport() {
 
   if (!data) return null;
 
-  const addFiles = async (files: FileList | null) => {
-    if (!files?.length) return;
+  const addFiles = async (fileList: FileList | null) => {
+    if (!fileList?.length) return;
+    // Snapshot immediately: e.target.files is a *live* FileList tied to the
+    // input element. The caller clears the input right after calling this
+    // (so the same photos can be picked again later), and since this
+    // function is async, that reset can otherwise empty the very list
+    // we're still iterating over — silently dropping everything after the
+    // first file. Copying it to a plain array up front avoids that.
+    const files = Array.from(fileList);
     setBusy("Preparing images…");
     const added: Item[] = [];
     for (const f of files) {
@@ -60,6 +67,7 @@ export default function BulkImport() {
           images: [{ mime: it.shot.mime, b64: it.shot.b64 }],
           players: data.players.map((p) => p.name),
           courses: data.courses.map((c) => ({ name: c.name, holes: c.holes, pars: c.pars, stroke_index: c.stroke_index, course_rating: c.course_rating, slope: c.slope })),
+          importerName: me?.name ?? null,
         }),
       });
       const j = await res.json();

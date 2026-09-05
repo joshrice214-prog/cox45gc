@@ -1,6 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { NextResponse } from "next/server";
 import { extractJSON, normalise, secondPassPrompt, serious, validate, visionPrompt, type Parsed } from "@/lib/scorecard";
+import { lookupCourseRating } from "@/lib/course-lookup";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -9,6 +10,8 @@ interface Body {
   images: { mime: string; b64: string }[];
   players: string[];
   courses: { name: string; holes?: number; pars: number[]; stroke_index: (number | null)[]; course_rating: number | null; slope: number | null }[];
+  /** Whoever's currently using the app — used to fill in a solo scorecard that prints no name at all. */
+  importerName?: string | null;
 }
 
 type ImgBlock = { type: "image"; source: { type: "base64"; media_type: "image/jpeg" | "image/png" | "image/webp" | "image/gif"; data: string } };
@@ -26,13 +29,14 @@ export async function POST(req: Request) {
   if (!body.images?.length || body.images.length > 4) return NextResponse.json({ error: "Send between 1 and 4 images." }, { status: 400 });
 
   const client = new Anthropic({ apiKey });
-  const model = process.env.ANTHROPIC_MODEL || "claude-sonnet-4-6";
+  const model = process.env.ANTHROPIC_MODEL || "claude-sonnet-5";
   const imgs: ImgBlock[] = body.images.map((i) => ({
     type: "image",
     source: { type: "base64", media_type: (["image/jpeg", "image/png", "image/webp", "image/gif"].includes(i.mime) ? i.mime : "image/jpeg") as ImgBlock["source"]["media_type"], data: i.b64 },
   }));
   const players = (body.players ?? []).slice(0, 30);
   const courses = (body.courses ?? []).slice(0, 40);
+  const importerName = body.importerName?.trim() || null;
 
   const ask = async (text: string) => {
     const res = await client.messages.create({
@@ -45,15 +49,26 @@ export async function POST(req: Request) {
 
   try {
     const first = await ask(visionPrompt(players, courses.map((c) => c.name)));
-    let parsed: Parsed = normalise(extractJSON(first), players, courses);
+    let parsed: Parsed = normalise(extractJSON(first), players, courses, importerName);
     let issues = validate(parsed);
     let secondPassDone = false;
+
+    // The card usually doesn't print rating/slope (WHS spec: "often absent").
+    // If nothing on the card or in our own course list has it, look it up online —
+    // still a suggestion, still shown to a human before it's saved.
+    if (parsed.course.trim() && parsed.courseRating == null && parsed.slope == null) {
+      const found = await lookupCourseRating(parsed.course, parsed.holes, parsed.tee);
+      if (found.found) {
+        parsed = { ...parsed, courseRating: found.courseRating ?? parsed.courseRating, slope: found.slope ?? parsed.slope, tee: parsed.tee ?? found.tee, ratingSource: "lookup", ratingNote: [found.tee ? `${found.tee} tees` : null, found.note, found.source].filter(Boolean).join(" · ") || null };
+        issues = validate(parsed);
+      }
+    }
 
     const bad = serious(issues);
     if (bad.length) {
       try {
         const again = await ask(secondPassPrompt(parsed, bad));
-        const fixed = normalise(extractJSON(again), players, courses);
+        const fixed = normalise(extractJSON(again), players, courses, importerName);
         const fi = validate(fixed);
         if (serious(fi).length <= bad.length) {
           parsed = fixed;

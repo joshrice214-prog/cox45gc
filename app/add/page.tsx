@@ -12,7 +12,7 @@ import { today } from "@/lib/stats";
 type Shot = { b64: string; mime: string; preview: string };
 
 export default function AddRound() {
-  const { data, refresh, toast } = useApp();
+  const { data, me, refresh, toast } = useApp();
   const router = useRouter();
   const [shots, setShots] = useState<Shot[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
@@ -25,12 +25,16 @@ export default function AddRound() {
 
   if (!data) return null;
 
-  const addFiles = async (files: FileList | null) => {
-    if (!files) return;
+  const addFiles = async (fileList: FileList | null) => {
+    if (!fileList?.length) return;
+    // Snapshot before anything async: the caller clears the input right
+    // after calling this, and e.target.files is a *live* list tied to that
+    // input — letting it stay live across an await risks losing files.
+    const picked = Array.from(fileList).slice(0, 4 - shots.length);
     setErr("");
     setBusy("Preparing…");
     const next = [...shots];
-    for (const f of [...files].slice(0, 4 - shots.length)) {
+    for (const f of picked) {
       try {
         next.push(await prepScorecardImage(f));
       } catch {
@@ -52,6 +56,7 @@ export default function AddRound() {
           images: shots.map((s) => ({ mime: s.mime, b64: s.b64 })),
           players: data.players.map((p) => p.name),
           courses: data.courses.map((c) => ({ name: c.name, holes: c.holes, pars: c.pars, stroke_index: c.stroke_index, course_rating: c.course_rating, slope: c.slope })),
+          importerName: me?.name ?? null,
         }),
       });
       const j = await res.json();

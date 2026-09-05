@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { extractJSON, normalise, validate, serious } from "../lib/scorecard";
+import { extractJSON, normalise, validate, serious, normaliseStrokeIndexForStorage, parseCardDate } from "../lib/scorecard";
 
 const PARS = [4, 4, 3, 5, 4, 4, 3, 4, 5, 4, 4, 3, 5, 4, 4, 3, 4, 5];
 const SI = [7, 3, 15, 1, 11, 5, 17, 9, 13, 8, 2, 16, 4, 12, 6, 18, 10, 14];
@@ -45,9 +45,90 @@ test("known course fills in rating, pars and SI", () => {
   assert.deepEqual(p.strokeIndex, SI);
 });
 
+test("18Birdies-style unlabelled rating/slope pair is un-swapped if backwards", () => {
+  // e.g. "Yellow 3121 yds (121.0/35.4)" misread with rating and slope transposed
+  const p = normalise({ holes: 9, pars: [5, 4, 4, 3, 5, 4, 4, 3, 4], courseRating: 121, slope: 35.4, players: [] }, [], []);
+  assert.equal(p.slope, 121);
+  assert.equal(p.courseRating, 35.4);
+});
+
+test("18Birdies HANDICAP row maps straight to stroke index, correctly ordered", () => {
+  const raw = {
+    course: "Edwalton Golf Club", date: "2024-09-14", holes: 9,
+    pars: [5, 4, 4, 3, 5, 4, 4, 3, 4],
+    strokeIndex: [5, 1, 3, 13, 11, 7, 17, 15, 9],
+    courseRating: 35.4, slope: 121,
+    players: [{ name: "Josh", scores: [8, 5, 7, 7, 10, 8, 5, 6, 10], total: 66, confidence: "high" }],
+  };
+  const p = normalise(raw, ["Josh"], []);
+  assert.equal(p.holes, 9);
+  assert.equal(p.courseRating, 35.4);
+  assert.equal(p.slope, 121);
+  assert.equal(p.players[0].gross, 66);
+  assert.deepEqual(validate(p), []);
+  // the card's printed 1–17 odd numbering is left untouched for review...
+  assert.deepEqual(p.strokeIndex, [5, 1, 3, 13, 11, 7, 17, 15, 9]);
+  // ...and converted to a plain 1–9 relative rank only at save time
+  assert.deepEqual(normaliseStrokeIndexForStorage(p.strokeIndex, 9), [3, 1, 2, 7, 6, 4, 9, 8, 5]);
+});
+
+test("stroke index reranking leaves an already-1-9 card untouched", () => {
+  const si = [7, 3, 5, 1, 9, 4, 8, 2, 6];
+  assert.deepEqual(normaliseStrokeIndexForStorage(si, 9), si);
+});
+
+test("stroke index reranking skips an incomplete or invalid card", () => {
+  assert.deepEqual(normaliseStrokeIndexForStorage([1, 2, null, 4, 5, 6, 7, 8, 9], 9), [1, 2, null, 4, 5, 6, 7, 8, 9]);
+  assert.deepEqual(normaliseStrokeIndexForStorage([1, 1, 3, 4, 5, 6, 7, 8, 9], 9), [1, 1, 3, 4, 5, 6, 7, 8, 9]);
+});
+
 test("nine-hole card is padded and typed as 9", () => {
   const p = normalise({ holes: 9, pars: PARS.slice(0, 9), players: [{ name: "Ed", scores: [5, 5, 4, 6, 5, 5, 4, 5, 6], total: 45 }] }, ["Ed"], []);
   assert.equal(p.holes, 9);
   assert.equal(p.pars.length, 9);
   assert.equal(p.players[0].gross, 45);
+});
+
+test("UK-first date parsing: ambiguous numeric dates read as DD/MM, not American", () => {
+  assert.equal(parseCardDate("14/09/2024", "x"), "2024-09-14");
+  assert.equal(parseCardDate("04/05/2026", "x"), "2026-05-04"); // 4 May, not April 5th
+  assert.equal(parseCardDate("1/2/2026", "x"), "2026-02-01"); // 1 Feb, not Jan 2nd
+});
+
+test("date parsing falls back to month-first only when day-first is impossible", () => {
+  assert.equal(parseCardDate("05/13/2026", "x"), "2026-05-13"); // 13 can't be a month
+});
+
+test("date parsing handles ISO and spelled-out months, and dots/dashes", () => {
+  assert.equal(parseCardDate("2024-09-14", "x"), "2024-09-14");
+  assert.equal(parseCardDate("14 Sep 2024", "x"), "2024-09-14");
+  assert.equal(parseCardDate("September 14, 2024", "x"), "2024-09-14");
+  assert.equal(parseCardDate("14.09.2024", "x"), "2024-09-14");
+  assert.equal(parseCardDate("14-09-2024", "x"), "2024-09-14");
+});
+
+test("date parsing falls back cleanly on nonsense or missing input", () => {
+  assert.equal(parseCardDate(null, "2026-01-01"), "2026-01-01");
+  assert.equal(parseCardDate("", "2026-01-01"), "2026-01-01");
+  assert.equal(parseCardDate("not a date", "2026-01-01"), "2026-01-01");
+  assert.equal(parseCardDate("32/13/2026", "2026-01-01"), "2026-01-01");
+});
+
+test("a solo card with no printed name is filled in with the importer's name", () => {
+  const raw = { holes: 9, pars: [5, 4, 4, 3, 5, 4, 4, 3, 4], players: [{ scores: [8, 5, 7, 7, 10, 8, 5, 6, 10], total: 66 }] };
+  const p = normalise(raw, ["Josh", "Owen", "Matt", "Ed"], [], "Josh");
+  assert.equal(p.players[0].name, "Josh");
+});
+
+test("two unnamed players on one card are left blank, not both given the importer's name", () => {
+  const raw = { holes: 9, pars: [5, 4, 4, 3, 5, 4, 4, 3, 4], players: [{ scores: Array(9).fill(5), total: 45 }, { scores: Array(9).fill(6), total: 54 }] };
+  const p = normalise(raw, [], [], "Josh");
+  assert.equal(p.players[0].name, "");
+  assert.equal(p.players[1].name, "");
+});
+
+test("importer's name is not applied when the card already names its one player", () => {
+  const raw = { holes: 9, pars: [5, 4, 4, 3, 5, 4, 4, 3, 4], players: [{ name: "Ed", scores: Array(9).fill(5), total: 45 }] };
+  const p = normalise(raw, ["Josh", "Ed"], [], "Josh");
+  assert.equal(p.players[0].name, "Ed");
 });

@@ -48,12 +48,12 @@ How an 18Birdies-style app screenshot is laid out (read this just as carefully �
 - A row labelled "HOLE" gives hole numbers, "PAR" gives the printed par per hole, and "HANDICAP" is the STROKE INDEX per hole (not a player's personal handicap) — map that row to strokeIndex.
 - One or more rows labelled "SCORE" give gross strokes per hole. A solo round has one SCORE row for the account holder; a group round has one SCORE row per player, each with a name label to its left or above it (sometimes on a separate "Scorecard" or "Group" screen with a row per player instead of just one). Capture every player's row you can see. Ignore any "NET" row entirely — that's the app's own handicap-adjusted score, not what we want.
 - The tee and rating are usually on one line near the date, formatted like "Yellow 3121 yds (121.0/35.4)" — two numbers in brackets, slash-separated. One of them is Slope (always a whole number, roughly 55-155) and the other is Course Rating (usually close to par, e.g. 33-37 for a 9-hole course or 67-77 for 18). Work out which is which from those ranges, not from position, and put them in courseRating and slope accordingly.
-- The played date is usually shown as a plain date in a bar at the very bottom or top of the screen (commonly DD/MM/YYYY). Convert whatever format you see to YYYY-MM-DD.
+- The played date is usually shown as a plain date in a bar at the very bottom or top of the screen. Copy it exactly as printed into "date" — do not convert or reformat it yourself, just transcribe the characters you see.
 - The course name is usually at the top, sometimes with the tee or "(9 HOLES)"/"(18 HOLES)" appended — strip that qualifier into the holes count, not into the course name itself.
 
 Read it carefully, one row at a time. Then return ONLY a JSON object, no markdown fences, no commentary:
 
-{"course":string|null,"date":"YYYY-MM-DD"|null,"holes":9|18,"tee":string|null,
+{"course":string|null,"date":string|null,"holes":9|18,"tee":string|null,
 "pars":[9 or 18 numbers],"strokeIndex":[9 or 18 numbers or null],"parOut":number|null,"parIn":number|null,"parTotal":number|null,
 "courseRating":number|null,"slope":number|null,
 "players":[{"name":string,"scores":[numbers or null],"out":number|null,"in":number|null,"total":number|null,"confidence":"high"|"medium"|"low"}],
@@ -68,7 +68,9 @@ Rules that matter:
 - Set "confidence" to low for any player whose handwriting is hard to make out.
 - Put anything you could not read into "unreadable" as short plain descriptions.
 - Course rating and slope only if actually printed. They are often absent.
-${names.length ? `- Expected player names, match to these where the handwriting is close: ${names.join(", ")}.` : ""}
+- "date": transcribe exactly what's printed, character for character (e.g. "14/09/2024" or "14 Sep 2024") — do not reorder the parts or guess which number is the day.
+- If there is exactly one player's scores on the card and no name is printed for them anywhere (common on a solo round screenshot), leave "name" as an empty string. Do not guess a name and do not pick one from the expected names list just to fill the field — we already know who's uploading the round and will fill it in ourselves.
+${names.length ? `- Expected player names, match to these ONLY where a name is actually printed or handwritten and it's a close match — never use this list to invent a name that isn't on the card: ${names.join(", ")}.` : ""}
 ${courses.length ? `- Courses played before, match the course name to one of these if it fits: ${courses.join(", ")}.` : ""}`;
 }
 
@@ -99,7 +101,53 @@ export function extractJSON(txt: string): unknown {
 
 const num = (v: unknown): number | null => (v === "" || v == null || isNaN(Number(v)) ? null : Number(v));
 
-export function normalise(raw: unknown, knownPlayers: string[], knownCourses: { name: string; holes?: number; pars: number[]; stroke_index: (number | null)[]; course_rating: number | null; slope: number | null }[]): Parsed {
+const MONTHS: Record<string, number> = {
+  jan: 1, january: 1, feb: 2, february: 2, mar: 3, march: 3, apr: 4, april: 4, may: 5,
+  jun: 6, june: 6, jul: 7, july: 7, aug: 8, august: 8, sep: 9, sept: 9, september: 9,
+  oct: 10, october: 10, nov: 11, november: 11, dec: 12, december: 12,
+};
+
+const pad2 = (n: number) => String(n).padStart(2, "0");
+const validDate = (y: number, m: number, d: number) =>
+  y > 1900 && y < 2100 && m >= 1 && m <= 12 && d >= 1 && d <= new Date(y, m, 0).getDate() ? `${y}-${pad2(m)}-${pad2(d)}` : null;
+
+/**
+ * Parses a date exactly as printed on a card, assuming UK day-first
+ * convention (this is a UK club) rather than trusting the vision model to
+ * have silently converted it — an ambiguous "04/05/2026" left to an LLM
+ * tends to come back American. Day-first is only abandoned when it's
+ * flatly impossible (e.g. "05/13/2026", where 13 can't be a month).
+ */
+export function parseCardDate(raw: string | null | undefined, fallback: string): string {
+  const s = (raw ?? "").trim();
+  if (!s) return fallback;
+
+  // Already ISO (some apps, or our own re-submission of a parsed value).
+  let m = s.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/);
+  if (m) return validDate(+m[1], +m[2], +m[3]) ?? fallback;
+
+  // Numeric, slash/dash/dot separated — day first unless that's impossible.
+  m = s.match(/^(\d{1,2})[/.\-](\d{1,2})[/.\-](\d{2,4})$/);
+  if (m) {
+    const [, a, b, y] = m;
+    let year = +y;
+    if (year < 100) year += year < 70 ? 2000 : 1900;
+    const dayFirst = validDate(year, +b, +a); // UK default: first number is the day
+    if (dayFirst) return dayFirst;
+    const monthFirst = validDate(year, +a, +b); // day-first was impossible — only remaining reading
+    return monthFirst ?? fallback;
+  }
+
+  // Textual month, either order: "14 Sep 2024" / "September 14, 2024".
+  m = s.match(/^(\d{1,2})[\s-]+([A-Za-z]{3,9})\.?,?[\s-]+(\d{4})$/);
+  if (m && MONTHS[m[2].toLowerCase()]) return validDate(+m[3], MONTHS[m[2].toLowerCase()], +m[1]) ?? fallback;
+  m = s.match(/^([A-Za-z]{3,9})\.?[\s-]+(\d{1,2}),?[\s-]+(\d{4})$/);
+  if (m && MONTHS[m[1].toLowerCase()]) return validDate(+m[3], MONTHS[m[1].toLowerCase()], +m[2]) ?? fallback;
+
+  return fallback;
+}
+
+export function normalise(raw: unknown, knownPlayers: string[], knownCourses: { name: string; holes?: number; pars: number[]; stroke_index: (number | null)[]; course_rating: number | null; slope: number | null }[], importerName?: string | null): Parsed {
   const r = (raw ?? {}) as Record<string, unknown>;
   const parsIn = Array.isArray(r.pars) ? (r.pars as unknown[]).map(num) : [];
   const holes: 9 | 18 = r.holes === 9 || (parsIn.length === 9 && r.holes !== 18) ? 9 : 18;
@@ -110,7 +158,7 @@ export function normalise(raw: unknown, knownPlayers: string[], knownCourses: { 
   };
   const p: Parsed = {
     course: String(r.course ?? "").trim(),
-    date: /^\d{4}-\d{2}-\d{2}$/.test(String(r.date ?? "")) ? String(r.date) : new Date().toISOString().slice(0, 10),
+    date: parseCardDate(r.date == null ? null : String(r.date), new Date().toISOString().slice(0, 10)),
     holes,
     tee: r.tee ? String(r.tee) : null,
     pars: pad(parsIn, null),
@@ -150,6 +198,14 @@ export function normalise(raw: unknown, knownPlayers: string[], knownCourses: { 
       };
     })
     .filter((pl) => pl.name || pl.gross);
+
+  // A solo scorecard often prints no name at all — it's implicitly "you".
+  // Only fill this in when there's exactly one player on the card; with two
+  // or more unnamed rows there's no safe way to guess which is which, so
+  // those are left blank for the review screen instead.
+  if (importerName && p.players.length === 1 && !p.players[0].name) {
+    p.players[0].name = importerName;
+  }
   if (!p.parTotal && p.pars.some((v) => v != null)) p.parTotal = sum(p.pars);
 
   const known = knownCourses.find((c) => c.name.toLowerCase().trim() === p.course.toLowerCase().trim() && (c.holes == null || c.holes === holes));
