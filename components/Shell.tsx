@@ -3,7 +3,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 import { useApp } from "./AppProvider";
-import { Avatar, Crest } from "./ui";
+import { Avatar } from "./ui";
 import ProfileSheet from "./ProfileSheet";
 import { registerServiceWorker } from "@/lib/push";
 
@@ -32,7 +32,7 @@ export default function Shell({ children }: { children: React.ReactNode }) {
     <div id="app">
       <header className="topbar">
         <Link href="/" className="crest" aria-label="Cox 45 clubhouse">
-          <Crest />
+          <img src="/logo.png" alt="" className="plaque" width={40} height={40} />
           <div className="wordmark">
             COX <em>45</em>
             <span className="tm">™</span>

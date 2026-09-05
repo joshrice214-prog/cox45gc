@@ -40,7 +40,7 @@ a { color: inherit; text-decoration: none; }
   border-bottom: 1px solid var(--line); background: var(--pine); flex: none;
 }
 .crest { display: flex; align-items: center; gap: 10px; }
-.crest svg { width: 34px; height: 38px; flex: none; }
+.crest .plaque { width: 40px; height: 40px; border-radius: 9px; flex: none; display: block; box-shadow: 0 0 0 1px rgba(201, 162, 39, 0.55); }
 .wordmark { font-family: var(--font-num); font-size: 24px; letter-spacing: 0.02em; line-height: 1; }
 .wordmark em { font-style: normal; color: var(--brass); }
 .wordmark .tm { font-family: var(--font-ui); font-size: 8px; vertical-align: super; color: var(--brass); }

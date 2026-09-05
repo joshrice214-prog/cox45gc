@@ -1,6 +1,6 @@
 /* Cox 45 service worker: app-shell cache + web push. */
 const VERSION = "cox45-v1";
-const SHELL = ["/", "/rounds", "/add", "/leaderboard", "/events", "/manifest.json", "/icons/icon-192.png", "/offline.html"];
+const SHELL = ["/", "/rounds", "/add", "/leaderboard", "/events", "/manifest.json", "/icons/icon-192.png", "/logo.png", "/offline.html"];
 
 self.addEventListener("install", (e) => {
   e.waitUntil(caches.open(VERSION).then((c) => c.addAll(SHELL).catch(() => {})).then(() => self.skipWaiting()));
