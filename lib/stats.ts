@@ -1,13 +1,22 @@
 import {
   computePlayer,
   currentIndex,
+  currentTier,
+  houseHistory,
+  houseIndex,
   indexAt,
   indexHistory,
   coxCategory,
   countingRounds,
+  promotions,
+  tierAt,
+  KIND_LABEL,
+  TIER_LABEL,
+  TIER_KIND,
   type RoundInput,
   type RoundResult,
   type Kind,
+  type Tier,
 } from "./handicap";
 import type { AppData, Course, Round, RoundScore } from "./types";
 
@@ -74,25 +83,37 @@ export function daysAgo(n: number): string {
 export interface BoardRow {
   playerId: string;
   name: string;
+  tier: Tier;
+  /** the headline house number for the player's tier (World once WHS Only) */
+  house: { kind: Kind; value: number | null; label: string };
   world: number | null;
+  pro: number | null;
   cox: number | null;
   counting: number;
   needed: number;
+  /** on World index — the one scale that never shifts under anyone */
   trend: { dir: "up" | "down" | "flat"; delta: number } | null;
-  history: { date: string; value: number }[];
-  movement: { world: number | null; cox: number | null }; // over the timeframe window
+  /** house-index history for the sparkline; promoted=true marks a ruler change */
+  history: { date: string; value: number; tier: Tier; promoted: boolean }[];
+  /** movement over the window: World always; house only if the tier didn't change in the window */
+  movement: { world: number | null; house: number | null };
 }
 
+/**
+ * Ranked by World Index — the only number that's on the same scale for a Cox 45
+ * player, a Pro and a WHS Only player. The house number is shown alongside.
+ */
 export function leaderboard(data: AppData, windowDays: number): BoardRow[] {
   const since = daysAgo(windowDays);
   return data.players
     .map((p) => {
       const res = playerResults(data, p.id);
-      const hist = indexHistory(res, "cox");
+      const h = houseIndex(res);
+      const wh = indexHistory(res, "world");
       let trend: BoardRow["trend"] = null;
-      if (hist.length >= 2) {
-        const back = hist[Math.max(0, hist.length - 4)].value;
-        const delta = hist[hist.length - 1].value - back;
+      if (wh.length >= 2) {
+        const back = wh[Math.max(0, wh.length - 4)].value;
+        const delta = wh[wh.length - 1].value - back;
         trend = { dir: delta <= -0.15 ? "up" : delta >= 0.15 ? "down" : "flat", delta };
       }
       const mv = (k: Kind) => {
@@ -100,25 +121,32 @@ export function leaderboard(data: AppData, windowDays: number): BoardRow[] {
         const then = indexAt(res, k, since);
         return now != null && then != null ? Math.round((now - then) * 10) / 10 : null;
       };
+      const sameTier = tierAt(res, since) === h.tier;
       return {
         playerId: p.id,
         name: p.name,
+        tier: h.tier,
+        house: { kind: h.kind, value: h.value, label: KIND_LABEL[h.kind] },
         world: currentIndex(res, "world"),
+        pro: currentIndex(res, "pro"),
         cox: currentIndex(res, "cox"),
         counting: countingRounds(res),
         needed: Math.max(0, 3 - countingRounds(res)),
         trend,
-        history: hist,
-        movement: { world: mv("world"), cox: mv("cox") },
+        history: houseHistory(res),
+        movement: { world: mv("world"), house: sameTier ? mv(h.kind) : null },
       };
     })
     .sort((a, b) => {
-      if (a.cox == null && b.cox == null) return b.counting - a.counting;
-      if (a.cox == null) return 1;
-      if (b.cox == null) return -1;
-      return a.cox - b.cox;
+      if (a.world == null && b.world == null) return b.counting - a.counting;
+      if (a.world == null) return 1;
+      if (b.world == null) return -1;
+      return a.world - b.world;
     });
 }
+
+export const tierBadge = (t: Tier): string | null => (t === "pro" ? "PRO" : t === "whs" ? "WHS" : null);
+export { TIER_LABEL, KIND_LABEL };
 
 /* ---------- per-round rows (season scoped) ---------- */
 
@@ -281,18 +309,26 @@ export function seasonHonours(data: AppData, season: number): Honour[] {
   const realBirds = [...birds].sort((a, b) => b.birdies - a.birdies);
   if (realBirds[0]?.birdies) out.push({ label: "Most real birdies", name: realBirds[0].name, detail: `${realBirds[0].birdies} this season` });
 
-  // most improved — index at start of season vs end of season (Cox 45)
+  // most improved — World index at start of season vs end. World is used because a
+  // player promoted mid-season would otherwise be measured on two different rulers.
   let bestImp: { name: string; delta: number } | null = null;
   for (const p of data.players) {
     const res = playerResults(data, p.id);
-    const start = indexAt(res, "cox", `${season - 1}-12-31`);
-    const end = indexAt(res, "cox", `${season}-12-31`);
+    const start = indexAt(res, "world", `${season - 1}-12-31`);
+    const end = indexAt(res, "world", `${season}-12-31`);
     if (start != null && end != null) {
       const delta = start - end;
       if (!bestImp || delta > bestImp.delta) bestImp = { name: p.name, delta };
     }
   }
-  if (bestImp && bestImp.delta > 0) out.push({ label: "Most improved", name: bestImp.name, detail: `Cox 45 index down ${bestImp.delta.toFixed(1)}` });
+  if (bestImp && bestImp.delta > 0) out.push({ label: "Most improved", name: bestImp.name, detail: `World index down ${bestImp.delta.toFixed(1)}` });
+
+  // promotions are milestones — they belong in the season they happened
+  for (const p of data.players) {
+    for (const pr of promotions(playerResults(data, p.id))) {
+      if (seasonOf(pr.date) === season) out.push({ label: `Graduated to ${TIER_LABEL[pr.tier]}`, name: p.name, detail: fmtDate(pr.date) });
+    }
+  }
   return out;
 }
 
@@ -314,13 +350,20 @@ export function allTimeRecords(data: AppData): AllTimeRecord[] {
   const bestVs = rows.filter((r) => r.vsCox != null).sort((a, b) => a.vsCox! - b.vsCox!)[0];
   if (bestVs) out.push({ label: "Best round vs Cox Par", name: names.get(bestVs.playerId) ?? "?", detail: `${fmtVs(bestVs.vsCox!)} at ${bestVs.course?.name ?? "?"}` });
 
-  let lowest: { name: string; v: number; date: string } | null = null;
-  for (const p of data.players) {
-    for (const h of indexHistory(playerResults(data, p.id), "cox")) {
-      if (!lowest || h.value < lowest.v) lowest = { name: p.name, v: h.value, date: h.date };
+  // Lowest index ever held — one record per track, and the house tracks only count
+  // snapshots recorded while the player was actually on that rung. A player's Cox 45
+  // history is frozen as a trophy the moment they graduate; it is never rewritten.
+  for (const t of ["cox45", "pro", "whs"] as Tier[]) {
+    const kind = TIER_KIND[t];
+    let lowest: { name: string; v: number; date: string } | null = null;
+    for (const p of data.players) {
+      for (const h of indexHistory(playerResults(data, p.id), kind)) {
+        if (t !== "whs" && h.tier !== t) continue; // World counts for everyone, always
+        if (!lowest || h.value < lowest.v) lowest = { name: p.name, v: h.value, date: h.date };
+      }
     }
+    if (lowest) out.push({ label: `Lowest ${t === "whs" ? "World" : TIER_LABEL[t]} index ever held`, name: lowest.name, detail: `${lowest.v.toFixed(1)}, ${fmtDate(lowest.date)}` });
   }
-  if (lowest) out.push({ label: "Lowest Cox 45 index ever held", name: lowest.name, detail: `${lowest.v.toFixed(1)}, ${fmtDate(lowest.date)}` });
 
   const mostBirds = [...rows].sort((a, b) => b.coxBirds - a.coxBirds)[0];
   if (mostBirds?.coxBirds) out.push({ label: "Most Cox Birds in one round", name: names.get(mostBirds.playerId) ?? "?", detail: `${mostBirds.coxBirds} at ${mostBirds.course?.name ?? "?"}` });
@@ -330,7 +373,7 @@ export function allTimeRecords(data: AppData): AllTimeRecord[] {
   return out;
 }
 
-/** Walk every round date; whoever holds the lowest Cox index after that date is #1. */
+/** Walk every round date; whoever holds the lowest World index after that date is #1 (World: same scale for every tier). */
 export function longestRunAtTop(data: AppData): { name: string; days: number } | null {
   const dates = [...new Set(data.rounds.map((r) => r.date))].sort();
   if (!dates.length) return null;
@@ -346,7 +389,7 @@ export function longestRunAtTop(data: AppData): { name: string; days: number } |
   for (const d of dates) {
     let leader: { name: string; v: number } | null = null;
     for (const p of results) {
-      const v = indexAt(p.res, "cox", d);
+      const v = indexAt(p.res, "world", d);
       if (v != null && (!leader || v < leader.v)) leader = { name: p.name, v };
     }
     if (!leader) continue;

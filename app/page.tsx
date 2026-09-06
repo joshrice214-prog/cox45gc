@@ -2,7 +2,7 @@
 import Link from "next/link";
 import { useMemo, useState } from "react";
 import { useApp } from "@/components/AppProvider";
-import { Avatar, Trend } from "@/components/ui";
+import { Avatar, TierBadge, Trend } from "@/components/ui";
 import PlayerSheet from "@/components/PlayerSheet";
 import { setRsvp } from "@/lib/data";
 import { allTimeRecords, fmtDate, fmtIdx, leaderboard, orderOfMerit, seasonHonours, seasonsAvailable, today } from "@/lib/stats";
@@ -73,27 +73,27 @@ export default function Clubhouse() {
       {me && (
         <div className="stats3">
           <div className="stat"><b>{myMerit >= 0 && merit[myMerit].played ? `${myMerit + 1}${ord(myMerit + 1)}` : "—"}</b><span>Order of merit</span></div>
-          <div className="stat"><b>{fmtIdx(mine?.cox)}</b><span>Cox 45 index</span></div>
+          <div className="stat"><b>{fmtIdx(mine?.house.value)}</b><span>{mine?.house.label ?? "Cox 45"} index</span></div>
           <div className="stat"><b>{myRounds}</b><span>Rounds in {year}</span></div>
         </div>
       )}
 
       <div className="sec-row">
-        <div className="sec-title">Cox 45 handicaps</div>
+        <div className="sec-title">Handicaps</div>
         <Link href="/leaderboard" className="muted small">Full leaderboard</Link>
       </div>
-      {board.filter((b) => b.cox != null).length === 0 ? (
+      {board.filter((b) => b.world != null).length === 0 ? (
         <div className="empty"><strong>No handicaps yet</strong>Three counting rounds each and the table fills itself in.<br /><Link href="/add" className="btn slim" style={{ marginTop: 12 }}>Add a round</Link></div>
       ) : (
-        board.filter((b) => b.cox != null).slice(0, 3).map((p, i) => (
+        board.filter((b) => b.world != null).slice(0, 3).map((p, i) => (
           <button key={p.playerId} className={`lb-row ${i === 0 ? "top" : ""}`} onClick={() => setOpen(p.playerId)}>
             <div className="pos">{i + 1}</div>
             <Avatar p={data.players.find((x) => x.id === p.playerId)} />
             <div className="lb-mid">
-              <div className="lb-name">{p.name} <Trend t={p.trend} /></div>
-              <div className="lb-sub">World {fmtIdx(p.world)}</div>
+              <div className="lb-name">{p.name} <TierBadge tier={p.tier} /> <Trend t={p.trend} /></div>
+              <div className="lb-sub">{p.tier === "whs" ? "WHS Only" : `${p.house.label} ${fmtIdx(p.house.value)}`}</div>
             </div>
-            <div className="lb-idx">{fmtIdx(p.cox)}</div>
+            <div className="lb-idx">{fmtIdx(p.world)}<small>World</small></div>
           </button>
         ))
       )}

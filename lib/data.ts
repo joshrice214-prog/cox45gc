@@ -162,7 +162,7 @@ export async function rebuildSnapshots(playerIds: string[]) {
     await sb.from("handicap_snapshots").delete().eq("player_id", pid);
     const rows = results
       .filter((r) => r.counting)
-      .map((r) => ({ player_id: pid, round_id: r.roundId, date: r.date, world_index: r.world.indexAfter, cox_index: r.cox.indexAfter }));
+      .map((r) => ({ player_id: pid, round_id: r.roundId, date: r.date, world_index: r.world.indexAfter, pro_index: r.pro.indexAfter, cox_index: r.cox.indexAfter, tier: r.tierAfter }));
     if (rows.length) {
       const { error } = await sb.from("handicap_snapshots").insert(rows);
       if (error) throw new Error(error.message);

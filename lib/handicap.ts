@@ -1,14 +1,31 @@
 /**
  * Cox 45™ handicap engine.
  *
- * Two indices are computed in parallel from the same rounds:
- *   World Index  — WHS, real course rating.
- *   Cox 45 Index — same method, but every rating is Cox-adjusted (+2 per hole).
+ * Three indices are computed in parallel from the same rounds, differing only in
+ * how much padding is added to the course rating:
+ *   World Index      — WHS, real course rating (padding 0)
+ *   Cox 45 Pro Index — rating + 1 per hole
+ *   Cox 45 Index     — rating + 2 per hole
+ *
+ * A player climbs a ladder: Cox 45 → Cox 45 Pro (once their Cox 45 index reaches
+ * −10.5) → WHS Only (once their Pro index reaches −1.0). Promotion only ever goes
+ * up. Every track is always computed over the whole history, so on promotion the
+ * new headline number is simply the track that was already running.
  *
  * Everything in here is pure. No I/O. Tested in tests/handicap.test.ts.
  */
 
-export type Kind = "world" | "cox";
+export type Kind = "world" | "pro" | "cox";
+export type Tier = "cox45" | "pro" | "whs";
+
+export const PADDING: Record<Kind, number> = { world: 0, pro: 1, cox: 2 };
+export const PRO_THRESHOLD = -10.5; // Cox 45 index at or below this → Cox 45 Pro
+export const WHS_THRESHOLD = -1.0; // Cox 45 Pro index at or below this → WHS Only
+
+/** The track that is a player's headline "house" number at a given tier. */
+export const TIER_KIND: Record<Tier, Kind> = { cox45: "cox", pro: "pro", whs: "world" };
+export const TIER_LABEL: Record<Tier, string> = { cox45: "Cox 45", pro: "Cox 45 Pro", whs: "WHS Only" };
+export const KIND_LABEL: Record<Kind, string> = { world: "World", pro: "Cox 45 Pro", cox: "Cox 45" };
 
 export interface RoundInput {
   id: string;
@@ -37,7 +54,14 @@ export interface RoundResult {
   counting: boolean; // has rating + slope + full hole scores (or gross total)
   reason?: string;
   world: KindResult;
+  pro: KindResult;
   cox: KindResult;
+  /** the ladder rung the player was on going into this round */
+  tierBefore: Tier;
+  /** the rung after this round's indices were recomputed (ratchets up only) */
+  tierAfter: Tier;
+  /** set when this round triggered a promotion */
+  promotedTo?: Tier;
 }
 
 export interface KindResult {
@@ -53,9 +77,15 @@ export interface KindResult {
 
 /* ---------- ratings ---------- */
 
-export function coxAdjustedRating(courseRating: number, holes: number): number {
-  return courseRating + holes * 2;
+/** Rating with a track's padding applied (+0 / +1 / +2 per hole). */
+export function paddedRating(courseRating: number, holes: number, kind: Kind): number {
+  return courseRating + holes * PADDING[kind];
 }
+/** Cox Adjusted Rating — the +2/hole house rating. Kept for the shared scoring baseline. */
+export function coxAdjustedRating(courseRating: number, holes: number): number {
+  return paddedRating(courseRating, holes, "cox");
+}
+/** Cox Par (+2/hole). The group's fixed scoring yardstick — never changes with tier. */
 export function coxPar(par: number, holes: number): number {
   return par + holes * 2;
 }
@@ -168,14 +198,15 @@ function evalKind(
   priorCounting: number,
 ): Omit<KindResult, "indexAfter"> {
   const par = sumParOf(r);
-  const rating = kind === "cox" ? coxAdjustedRating(r.courseRating!, r.holes) : r.courseRating!;
-  const base = kind === "cox" ? 4 : 2;
+  const rating = paddedRating(r.courseRating!, r.holes, kind);
+  // cap = Par + padding + 2 + strokes: World Par+2, Pro Par+3, Cox Par+4
+  const base = 2 + PADDING[kind];
 
   // 3.2 — no cap for the first 3 rounds, and never without an index to base it on.
-  // Course Handicap = Index × (Slope/113) + (Rating − Par). For the Cox side the
-  // rating is the Cox-adjusted one and Par is the real par, which is what makes the
-  // Cox course handicap come out equal to the World one — so the cap shifts by
-  // exactly +2 per hole (Par+4) rather than being harsher.
+  // Course Handicap = Index × (Slope/113) + (Rating − Par). The padded rating is
+  // used against the real par, which is what makes every track's course handicap
+  // come out equal to the World one — so the cap shifts by exactly the padding
+  // rather than biting harder on the house tracks.
   const capOn = priorCounting >= 3 && indexBefore != null;
   const ch = capOn ? courseHandicap(indexBefore!, r.slope!, rating, par, r.holes) : null;
 
@@ -202,10 +233,9 @@ function evalKind(
  */
 export function computePlayer(roundsIn: RoundInput[]): RoundResult[] {
   const rounds = [...roundsIn].sort((a, b) => a.date.localeCompare(b.date) || a.id.localeCompare(b.id));
-  const wDiffs: number[] = [];
-  const cDiffs: number[] = [];
-  let wIdx: number | null = null;
-  let cIdx: number | null = null;
+  const diffs: Record<Kind, number[]> = { world: [], pro: [], cox: [] };
+  const idx: Record<Kind, number | null> = { world: null, pro: null, cox: null };
+  let tier: Tier = "cox45";
   const out: RoundResult[] = [];
 
   for (const r of rounds) {
@@ -213,14 +243,14 @@ export function computePlayer(roundsIn: RoundInput[]): RoundResult[] {
       (r.scores.length === r.holes && r.scores.every((s) => s != null)) || r.grossTotal != null;
     const counting = !!(r.courseRating && r.slope && r.holes && hasScore && r.pars.length === r.holes);
     if (!counting) {
-      const empty = (): KindResult => ({
+      const empty = (k: Kind): KindResult => ({
         indexBefore: null,
         courseHandicap: null,
         capApplied: false,
         holes: r.scores.map((raw) => ({ raw, capped: raw, wasCapped: false })),
         adjustedGross: null,
         differential: null,
-        indexAfter: null,
+        indexAfter: idx[k],
       });
       out.push({
         roundId: r.id,
@@ -228,27 +258,70 @@ export function computePlayer(roundsIn: RoundInput[]): RoundResult[] {
         holes: r.holes,
         counting: false,
         reason: !r.courseRating || !r.slope ? "No course rating or slope" : "Incomplete score",
-        world: { ...empty(), indexAfter: wIdx },
-        cox: { ...empty(), indexAfter: cIdx },
+        world: empty("world"),
+        pro: empty("pro"),
+        cox: empty("cox"),
+        tierBefore: tier,
+        tierAfter: tier,
       });
       continue;
     }
-    const w = evalKind(r, "world", wIdx, wDiffs.length);
-    const c = evalKind(r, "cox", cIdx, cDiffs.length);
-    wDiffs.push(w.differential!);
-    cDiffs.push(c.differential!);
-    wIdx = indexFromDifferentials(wDiffs);
-    cIdx = indexFromDifferentials(cDiffs);
+    const tierBefore = tier;
+    const res = {} as Record<Kind, KindResult>;
+    for (const k of ["world", "pro", "cox"] as Kind[]) {
+      const e = evalKind(r, k, idx[k], diffs[k].length);
+      diffs[k].push(e.differential!);
+      idx[k] = indexFromDifferentials(diffs[k]);
+      res[k] = { ...e, indexAfter: idx[k] };
+    }
+    // the ladder — ratchets up only, checked after every round
+    let promotedTo: Tier | undefined;
+    if (tier === "cox45" && idx.cox != null && idx.cox <= PRO_THRESHOLD) {
+      tier = "pro";
+      promotedTo = "pro";
+    }
+    if (tier === "pro" && idx.pro != null && idx.pro <= WHS_THRESHOLD) {
+      tier = "whs";
+      promotedTo = "whs";
+    }
     out.push({
       roundId: r.id,
       date: r.date,
       holes: r.holes,
       counting: true,
-      world: { ...w, indexAfter: wIdx },
-      cox: { ...c, indexAfter: cIdx },
+      world: res.world,
+      pro: res.pro,
+      cox: res.cox,
+      tierBefore,
+      tierAfter: tier,
+      promotedTo,
     });
   }
   return out;
+}
+
+export function currentTier(results: RoundResult[]): Tier {
+  return results.length ? results[results.length - 1].tierAfter : "cox45";
+}
+
+export function tierAt(results: RoundResult[], date: string): Tier {
+  let t: Tier = "cox45";
+  for (const r of results) {
+    if (r.date > date) break;
+    t = r.tierAfter;
+  }
+  return t;
+}
+
+/** The headline house number for the player's current tier (World once they're WHS Only). */
+export function houseIndex(results: RoundResult[]): { tier: Tier; kind: Kind; value: number | null } {
+  const tier = currentTier(results);
+  const kind = TIER_KIND[tier];
+  return { tier, kind, value: currentIndex(results, kind) };
+}
+
+export function promotions(results: RoundResult[]): { tier: Tier; date: string; roundId: string }[] {
+  return results.filter((r) => r.promotedTo).map((r) => ({ tier: r.promotedTo!, date: r.date, roundId: r.roundId }));
 }
 
 export function currentIndex(results: RoundResult[], kind: Kind): number | null {
@@ -259,11 +332,23 @@ export function currentIndex(results: RoundResult[], kind: Kind): number | null 
   return null;
 }
 
-/** Index history as [{date, value}] — only rounds that produced an index. */
-export function indexHistory(results: RoundResult[], kind: Kind): { date: string; value: number }[] {
+/** Index history as [{date, value, tier}] — only rounds that produced an index. */
+export function indexHistory(results: RoundResult[], kind: Kind): { date: string; value: number; tier: Tier; promoted: boolean }[] {
   return results
     .filter((r) => r.counting && r[kind].indexAfter != null)
-    .map((r) => ({ date: r.date, value: r[kind].indexAfter! }));
+    .map((r) => ({ date: r.date, value: r[kind].indexAfter!, tier: r.tierAfter, promoted: !!r.promotedTo }));
+}
+
+/**
+ * The player's house-index history — the track that was their headline number at
+ * the time of each round. Jumps at promotion (the ruler changes), so consumers
+ * should mark those points rather than read them as form.
+ */
+export function houseHistory(results: RoundResult[]): { date: string; value: number; tier: Tier; promoted: boolean }[] {
+  return results
+    .filter((r) => r.counting)
+    .map((r) => ({ date: r.date, value: r[TIER_KIND[r.tierAfter]].indexAfter, tier: r.tierAfter, promoted: !!r.promotedTo }))
+    .filter((h): h is { date: string; value: number; tier: Tier; promoted: boolean } => h.value != null);
 }
 
 /** Index a player held on/before a given date (null if none yet). */

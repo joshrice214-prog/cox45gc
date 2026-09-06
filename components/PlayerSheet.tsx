@@ -1,8 +1,8 @@
 "use client";
 import { useApp } from "./AppProvider";
-import { Avatar, Sheet, VsChip, Sparkline } from "./ui";
-import { currentIndex, indexHistory } from "@/lib/handicap";
-import { fmtIdx, formGuide, headToHead, playerResults, scoreRows } from "@/lib/stats";
+import { Avatar, Sheet, VsChip, Sparkline, TierBadge } from "./ui";
+import { currentIndex, houseHistory, houseIndex, promotions, PRO_THRESHOLD, WHS_THRESHOLD, TIER_LABEL } from "@/lib/handicap";
+import { fmtDate, fmtIdx, formGuide, headToHead, playerResults, scoreRows } from "@/lib/stats";
 
 export default function PlayerSheet({ playerId, onClose }: { playerId: string; onClose: () => void }) {
   const { data } = useApp();
@@ -16,18 +16,34 @@ export default function PlayerSheet({ playerId, onClose }: { playerId: string; o
   const mostCoxPars = Math.max(0, ...rows.map((r) => r.coxParsOrBetter));
   const form = formGuide(data, playerId);
   const others = data.players.filter((x) => x.id !== playerId);
-  const hist = indexHistory(res, "cox");
+  const hist = houseHistory(res);
+  const house = houseIndex(res);
+  const proms = promotions(res);
+  const cox = currentIndex(res, "cox"), pro = currentIndex(res, "pro");
+  const toPro = cox == null ? null : Math.round((cox - PRO_THRESHOLD) * 10) / 10;
+  const toWhs = pro == null ? null : Math.round((pro - WHS_THRESHOLD) * 10) / 10;
 
   return (
-    <Sheet title={[p.first_name, p.last_name].filter(Boolean).join(" ") || p.name} sub="Cox 45 record" onClose={onClose}>
+    <Sheet title={[p.first_name, p.last_name].filter(Boolean).join(" ") || p.name} sub={TIER_LABEL[house.tier]} onClose={onClose}>
       <div style={{ display: "flex", gap: 12, alignItems: "center", marginBottom: 14 }}>
         <Avatar p={p} size="lg" />
         <div className="grid2" style={{ flex: 1 }}>
-          <div className="stat"><b>{fmtIdx(currentIndex(res, "cox"))}</b><span>Cox 45 index</span></div>
-          <div className="stat"><b>{fmtIdx(currentIndex(res, "world"))}</b><span>World index</span></div>
+          {house.tier !== "whs" && <div className="stat"><b>{fmtIdx(house.value)}</b><span>{TIER_LABEL[house.tier]} index</span></div>}
+          <div className="stat" style={house.tier === "whs" ? { gridColumn: "1 / -1" } : undefined}><b>{fmtIdx(currentIndex(res, "world"))}</b><span>World index <TierBadge tier={house.tier} /></span></div>
         </div>
       </div>
-      {hist.length >= 2 && <div className="panel" style={{ padding: "10px 14px" }}><div className="muted small">Cox 45 index over time</div><Sparkline hist={hist} /></div>}
+      <div className="ladder" aria-label="Handicap ladder">
+        <div className={`rung ${house.tier !== "cox45" ? "done" : "now"}`}><b>Cox 45</b>{house.tier === "cox45" && toPro != null ? (toPro > 0 ? `${toPro.toFixed(1)} to Pro` : "Pro next round") : house.tier === "cox45" ? "3 rounds to start" : "Graduated"}</div>
+        <div className={`rung ${house.tier === "whs" ? "done" : house.tier === "pro" ? "now" : ""}`}><b>Pro</b>{house.tier === "pro" && toWhs != null ? (toWhs > 0 ? `${toWhs.toFixed(1)} to WHS` : "WHS next round") : house.tier === "whs" ? "Graduated" : `at ${PRO_THRESHOLD}`}</div>
+        <div className={`rung ${house.tier === "whs" ? "now" : ""}`}><b>WHS</b>{house.tier === "whs" ? "Top rung" : `at ${WHS_THRESHOLD.toFixed(1)}`}</div>
+      </div>
+      {proms.length > 0 && <div className="muted small" style={{ marginTop: 8 }}>{proms.map((x) => `${TIER_LABEL[x.tier]} on ${fmtDate(x.date)}`).join(" · ")}</div>}
+      {hist.length >= 2 && (
+        <div className="panel" style={{ padding: "10px 14px", marginTop: 12 }}>
+          <div className="muted small">House index over time{proms.length ? " — brass ticks mark a promotion (new ruler, not a bad week)" : ""}</div>
+          <Sparkline hist={hist} width={300} height={44} />
+        </div>
+      )}
       {form.length > 0 && (
         <>
           <div className="sec-title" style={{ marginTop: 0 }}>Last {form.length} rounds vs Cox Par</div>

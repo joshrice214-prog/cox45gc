@@ -30,7 +30,7 @@ tests/               node:test suites (npm test)
 
 ## The maths (spec §3, implemented in `lib/handicap.ts`)
 
-Two indices from the same rounds:
+Three indices from the same rounds (World, Cox 45 Pro, Cox 45 — see the ladder below). The Cox 45 case:
 
 - **Cox Adjusted Rating** = Course Rating + 2 × holes. **Cox Par** = Par + 2 × holes.
 - **Net double bogey cap**, from a player's 4th counting round onward, using the index they carried *into* the round (never the one it produces):
@@ -44,6 +44,18 @@ Two indices from the same rounds:
 - Without a stroke index the cap still applies using only the "full 18s" strokes; the review screen says so.
 
 `handicap_snapshots` is a cache rebuilt from the rounds after every save or delete. Rounds are the source of truth.
+
+## The ladder (Cox 45 → Cox 45 Pro → WHS Only)
+
+Three tracks run in parallel for every player, differing only in padding on the course rating: World (+0/hole), **Cox 45 Pro** (+1/hole), **Cox 45** (+2/hole). The cap follows the padding: `Par + padding + 2 + strokes`.
+
+- Everyone starts on Cox 45. A Cox 45 index at or below **−10.5** promotes you to Pro; a Pro index at or below **−1.0** promotes you to WHS Only. Thresholds are constants at the top of `lib/handicap.ts`.
+- Promotion only goes up. Because every track is always computed over the whole history, your new headline number on promotion is simply the track that was already running — no fresh start, no waiting for three rounds.
+- **What tier changes:** your headline number, the cap on your own rounds, your badge (`PRO` / `WHS`). WHS Only players show one number.
+- **What tier does not change:** the group's shared yardstick. Order of merit, Cox Birds, course records and "vs Cox Par" are always against Par + 2 for everyone, forever.
+- **Cross-tier comparisons use World Index**, the only number on the same scale for all three rungs: leaderboard order, longest run at #1, Most Improved.
+- **Hall of Fame:** "lowest index ever held" is one record per rung, and the house rungs only count snapshots recorded while the player was actually on that rung — a Cox 45 record is frozen as a trophy when the player graduates and is never rewritten. Promotions appear as season honours.
+- The sparkline breaks and shows a brass tick at a promotion so the jump reads as "new ruler", not a bad week.
 
 ## Order of merit
 

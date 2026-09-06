@@ -60,9 +60,14 @@ create table if not exists handicap_snapshots (
   round_id uuid not null references rounds(id) on delete cascade,
   date date not null,
   world_index numeric(4,1),
+  pro_index numeric(4,1),
   cox_index numeric(4,1),
+  tier text not null default 'cox45' check (tier in ('cox45','pro','whs')),
   primary key (player_id, round_id)
 );
+-- for installs created before the ladder existed
+alter table handicap_snapshots add column if not exists pro_index numeric(4,1);
+alter table handicap_snapshots add column if not exists tier text not null default 'cox45';
 
 create table if not exists rsvps (
   event_id uuid not null references events(id) on delete cascade,

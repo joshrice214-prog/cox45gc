@@ -39,18 +39,41 @@ export function HoleCell({ score, par, capped, capTo }: { score: number | null; 
   );
 }
 
-export function Sparkline({ hist }: { hist: { value: number }[] }) {
+/**
+ * Index-over-time. A promotion changes the ruler, so the line is broken there and a
+ * brass tick marks it — the jump is not form, it's a new scale.
+ */
+export function Sparkline({ hist, width = 140, height = 22 }: { hist: { value: number; promoted?: boolean }[]; width?: number; height?: number }) {
   if (hist.length < 2) return null;
-  const w = 140, h = 22;
+  const w = width, h = height;
   const vals = hist.map((x) => x.value);
   const mn = Math.min(...vals), mx = Math.max(...vals), rng = mx - mn || 1;
-  const pts = vals.map((v, i) => `${((i / (vals.length - 1)) * w).toFixed(1)},${(((v - mn) / rng) * (h - 4) + 2).toFixed(1)}`).join(" ");
+  const X = (i: number) => (i / (vals.length - 1)) * w;
+  const Y = (v: number) => h - (((v - mn) / rng) * (h - 4) + 2);
+  // split into segments at each promotion
+  const segs: string[][] = [[]];
+  const ticks: number[] = [];
+  hist.forEach((p, i) => {
+    if (p.promoted && i > 0) {
+      segs.push([]);
+      ticks.push(X(i));
+    }
+    segs[segs.length - 1].push(`${X(i).toFixed(1)},${Y(p.value).toFixed(1)}`);
+  });
   const good = vals[vals.length - 1] <= vals[0];
   return (
     <svg className="spark" width={w} height={h} viewBox={`0 0 ${w} ${h}`} aria-hidden="true">
-      <polyline points={pts} fill="none" stroke={good ? "#7CC47F" : "#D2593F"} strokeWidth="1.6" strokeLinejoin="round" strokeLinecap="round" />
+      {ticks.map((x, i) => <line key={i} x1={x} x2={x} y1={0} y2={h} stroke="#C9A227" strokeWidth="1" strokeDasharray="2 2" />)}
+      {segs.map((pts, i) => (
+        <polyline key={i} points={pts.join(" ")} fill="none" stroke={good ? "#7CC47F" : "#D2593F"} strokeWidth="1.6" strokeLinejoin="round" strokeLinecap="round" />
+      ))}
     </svg>
   );
+}
+
+export function TierBadge({ tier }: { tier: "cox45" | "pro" | "whs" }) {
+  if (tier === "cox45") return null;
+  return <span className={`tier ${tier}`} title={tier === "pro" ? "Cox 45 Pro" : "WHS Only"}>{tier === "pro" ? "PRO" : "WHS"}</span>;
 }
 
 export function Trend({ t }: { t: { dir: "up" | "down" | "flat"; delta: number } | null }) {

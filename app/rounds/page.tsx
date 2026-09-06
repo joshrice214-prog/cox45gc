@@ -5,6 +5,7 @@ import { useApp } from "@/components/AppProvider";
 import { Avatar, HoleCell, VsChip } from "@/components/ui";
 import { deleteRound } from "@/lib/data";
 import { coxParOf, fmtDate, roundResultFor, scoreRows } from "@/lib/stats";
+import { TIER_KIND, KIND_LABEL } from "@/lib/handicap";
 
 export default function Rounds() {
   const { data, refresh, toast } = useApp();
@@ -40,7 +41,10 @@ export default function Rounds() {
               {mine.map((row) => {
                 const p = data.players.find((x) => x.id === row.playerId);
                 const res = isOpen ? roundResultFor(data, row.playerId, r.id) : undefined;
-                const capped = res?.cox.holes.filter((h) => h.wasCapped).length ?? 0;
+                // caps shown for the track that was the player's house number at the time
+                const kind = res ? TIER_KIND[res.tierBefore] : "cox";
+                const track = res?.[kind];
+                const capped = track?.holes.filter((h) => h.wasCapped).length ?? 0;
                 return (
                   <div key={row.playerId}>
                     <div className="score-line">
@@ -50,10 +54,11 @@ export default function Rounds() {
                     </div>
                     {isOpen && c && c.pars.length > 0 && row.score.hole_scores?.length > 0 && (
                       <>
-                        <HoleGrid scores={row.score.hole_scores} pars={c.pars} caps={res?.cox.holes} />
-                        {res?.counting && (
+                        <HoleGrid scores={row.score.hole_scores} pars={c.pars} caps={track?.holes} />
+                        {res?.counting && track && (
                           <div className="legend">
-                            {capped ? <><i />{capped} hole{capped === 1 ? "" : "s"} capped at net double bogey for the handicap (Cox: {res.cox.adjustedGross}, World: {res.world.adjustedGross}). The card itself is untouched.</> : res.cox.capApplied ? "Nothing needed capping." : "No cap yet — first three rounds count in full."}
+                            {capped ? <><i />{capped} hole{capped === 1 ? "" : "s"} capped at net double bogey for the handicap ({KIND_LABEL[kind]}: {track.adjustedGross}{kind !== "world" ? `, World: ${res.world.adjustedGross}` : ""}). The card itself is untouched.</> : track.capApplied ? "Nothing needed capping." : "No cap yet — first three rounds count in full."}
+                            {res.promotedTo && <> · <b style={{ color: "var(--brass-soft)" }}>Promoted to {KIND_LABEL[TIER_KIND[res.promotedTo]] === "World" ? "WHS Only" : KIND_LABEL[TIER_KIND[res.promotedTo]]} after this round.</b></>}
                           </div>
                         )}
                       </>

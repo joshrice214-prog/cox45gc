@@ -36,7 +36,9 @@ export interface HandicapSnapshot {
   round_id: string;
   date: string;
   world_index: number | null;
+  pro_index: number | null;
   cox_index: number | null;
+  tier: "cox45" | "pro" | "whs";
 }
 export interface GolfEvent {
   id: string;

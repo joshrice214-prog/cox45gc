@@ -1,7 +1,7 @@
 "use client";
 import { useState } from "react";
 import { useApp } from "@/components/AppProvider";
-import { Avatar, Sparkline, Trend } from "@/components/ui";
+import { Avatar, Sparkline, TierBadge, Trend } from "@/components/ui";
 import PlayerSheet from "@/components/PlayerSheet";
 import type { Player } from "@/lib/types";
 import { birdieCounts, courseRecords, fmtDate, fmtIdx, leaderboard, orderOfMerit, seasonsAvailable } from "@/lib/stats";
@@ -16,8 +16,8 @@ export default function Leaderboard() {
   if (!data) return null;
 
   const board = leaderboard(data, win);
-  const ready = board.filter((b) => b.cox != null);
-  const waiting = board.filter((b) => b.cox == null);
+  const ready = board.filter((b) => b.world != null);
+  const waiting = board.filter((b) => b.world == null);
   const merit = orderOfMerit(data, season).filter((m) => m.played > 0);
   const records = courseRecords(data, season);
   const birds = birdieCounts(data, season);
@@ -34,7 +34,7 @@ export default function Leaderboard() {
           ))}
         </div>
       </div>
-      <div className="muted small" style={{ margin: "0 4px 9px" }}>Ranked by Cox 45. Movement is over the last {win} days. The index is a rolling WHS number — it never resets by season.</div>
+      <div className="muted small" style={{ margin: "0 4px 9px" }}>Ranked by World index — the one number on the same scale for everyone. Your house number sits beside it. Movement is over the last {win} days. Indices roll with your rounds and never reset by season.</div>
 
       {ready.length === 0 && <div className="empty"><strong>No handicaps yet</strong>Each player needs three counting rounds (course rating and slope filled in).</div>}
       {ready.map((p, i) => (
@@ -42,14 +42,21 @@ export default function Leaderboard() {
           <div className="pos">{i + 1}</div>
           <Avatar p={pl(p.playerId)} />
           <div className="lb-mid">
-            <div className="lb-name">{p.name} <Trend t={p.trend} /></div>
-            <div className="lb-sub">{p.counting} counting rounds · {win}d: Cox {mv(p.movement.cox)} · World {mv(p.movement.world)}</div>
+            <div className="lb-name">{p.name} <TierBadge tier={p.tier} /> <Trend t={p.trend} /></div>
+            <div className="lb-sub">
+              {p.counting} counting rounds · {win}d: World {mv(p.movement.world)}
+              {p.tier !== "whs" && <> · {p.house.label} {p.movement.house == null ? <span className="muted">— (promoted)</span> : mv(p.movement.house)}</>}
+            </div>
             <Sparkline hist={p.history} />
           </div>
-          <div style={{ display: "flex", gap: 14 }}>
-            <div className="lb-idx">{fmtIdx(p.cox)}<small>Cox 45</small></div>
-            <div className="lb-idx" style={{ color: "var(--cream-dim)" }}>{fmtIdx(p.world)}<small>World</small></div>
-          </div>
+          {p.tier === "whs" ? (
+            <div className="lb-idx">{fmtIdx(p.world)}<small>World</small></div>
+          ) : (
+            <div style={{ display: "flex", gap: 14 }}>
+              <div className="lb-idx">{fmtIdx(p.house.value)}<small>{p.house.label}</small></div>
+              <div className="lb-idx" style={{ color: "var(--cream-dim)" }}>{fmtIdx(p.world)}<small>World</small></div>
+            </div>
+          )}
         </button>
       ))}
       {waiting.length > 0 && (

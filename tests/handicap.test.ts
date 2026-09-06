@@ -11,6 +11,10 @@ import {
   coxCategory,
   computePlayer,
   round1,
+  currentTier,
+  houseIndex,
+  promotions,
+  tierAt,
   type RoundInput,
 } from "../lib/handicap";
 
@@ -179,4 +183,46 @@ test("nine-hole round doubles and stands alone", () => {
   const res = computePlayer([r9]);
   assert.equal(res[0].world.differential, (((45 - 35.5) * 113) / 125) * 2);
   assert.equal(res[0].cox.differential, (((45 - 53.5) * 113) / 125) * 2);
+});
+
+test("pro track pads +1 per hole and caps at Par+3", () => {
+  const steady = PARS.map((p) => p + 1);
+  const blowup = PARS.map((p, i) => (i === 0 ? p + 8 : p + 1));
+  const res = computePlayer([
+    mk("a", "2026-01-01", steady), mk("b", "2026-01-08", steady), mk("c", "2026-01-15", steady), mk("d", "2026-01-22", blowup),
+  ]);
+  // pro differential = (90 − (71+18)) × 113/125
+  assert.equal(res[0].pro.differential, ((90 - 89) * 113) / 125);
+  assert.equal(res[3].pro.courseHandicap, res[3].world.courseHandicap);
+  assert.equal(res[3].pro.holes[0].capped, 4 + 3 + 1);
+  assert.equal(res[3].pro.holes[0].wasCapped, true);
+});
+
+test("ladder: cox45 → pro at −10.5, pro → whs at −1.0, ratchets only", () => {
+  // 90s every time: cox index after 3 = −17.4 (≤ −10.5 → Pro immediately);
+  // pro index after 3 = 0.9−2 = −1.1 (≤ −1.0 → WHS in the same round)
+  const steady = PARS.map((p) => p + 1);
+  const res = computePlayer([mk("a", "2026-01-01", steady), mk("b", "2026-01-08", steady), mk("c", "2026-01-15", steady)]);
+  assert.equal(res[1].tierAfter, "cox45");
+  assert.equal(res[2].tierBefore, "cox45");
+  assert.equal(res[2].tierAfter, "whs");
+  assert.equal(res[2].promotedTo, "whs");
+  assert.equal(currentTier(res), "whs");
+  assert.equal(houseIndex(res).kind, "world");
+
+  // a much worse golfer stays put, then climbs once and never drops
+  const bad = PARS.map((p) => p + 4); // 144 → cox diff (144−107)×113/125 = 33.4
+  const good = PARS.map((p) => p + 1);
+  const rs2 = computePlayer([
+    mk("1", "2026-01-01", bad), mk("2", "2026-01-02", bad), mk("3", "2026-01-03", bad), // cox idx 31.4
+    mk("4", "2026-01-04", good), mk("5", "2026-01-05", good), // 5 rounds: lowest 1 → 90 capped? cap on from round 4
+  ]);
+  assert.equal(rs2[2].tierAfter, "cox45");
+  // check it never goes backwards
+  let seen: string[] = rs2.map((r) => r.tierAfter);
+  const order = { cox45: 0, pro: 1, whs: 2 };
+  for (let i = 1; i < seen.length; i++) assert.ok(order[seen[i] as keyof typeof order] >= order[seen[i - 1] as keyof typeof order]);
+  assert.deepEqual(promotions(res).map((p) => p.tier), ["whs"]);
+  assert.equal(tierAt(res, "2026-01-10"), "cox45");
+  assert.equal(tierAt(res, "2026-01-20"), "whs");
 });
