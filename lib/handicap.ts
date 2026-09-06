@@ -332,8 +332,8 @@ export function houseIndex(results: RoundResult[]): { tier: Tier; kind: Kind; va
   return { tier, kind, value: currentIndex(results, kind) };
 }
 
-export function promotions(results: RoundResult[]): { tier: Tier; date: string; roundId: string }[] {
-  return results.filter((r) => r.promotedTo).map((r) => ({ tier: r.promotedTo!, date: r.date, roundId: r.roundId }));
+export function promotions(results: RoundResult[]): { tier: Tier; from: Tier; date: string; roundId: string }[] {
+  return results.filter((r) => r.promotedTo).map((r) => ({ tier: r.promotedTo!, from: r.tierBefore, date: r.date, roundId: r.roundId }));
 }
 
 export function currentIndex(results: RoundResult[], kind: Kind): number | null {

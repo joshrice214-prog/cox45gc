@@ -336,10 +336,9 @@ export function seasonHonours(data: AppData, season: number): Honour[] {
     const bests = personalBests(res);
     for (const pr of promotions(res)) {
       if (seasonOf(pr.date) !== season) continue;
-      // the rung they just left: pro → came from cox45; whs → came from pro
-      const from: Tier = pr.tier === "whs" ? "pro" : "cox45";
-      const pb = bests.find((b) => b.tier === from);
-      const detail = pb ? `personal-best ${TIER_LABEL[from]} index ${pb.value.toFixed(1)}${pb.early ? "†" : ""}, ${fmtDate(pr.date)}` : fmtDate(pr.date);
+      // the rung they just left (a player can skip Pro entirely, so read it off the promotion)
+      const pb = bests.find((b) => b.tier === pr.from);
+      const detail = pb ? `personal-best ${TIER_LABEL[pr.from]} index ${pb.value.toFixed(1)}${pb.early ? "†" : ""}, ${fmtDate(pr.date)}` : fmtDate(pr.date);
       out.push({ label: `Graduated to ${TIER_LABEL[pr.tier]}`, name: p.name, detail });
     }
   }
