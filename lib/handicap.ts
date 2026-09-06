@@ -344,19 +344,60 @@ export function currentIndex(results: RoundResult[], kind: Kind): number | null 
   return null;
 }
 
+export interface IndexPoint {
+  date: string;
+  value: number;
+  /** rung after this round — what the player is on from here (sparkline, badges) */
+  tier: Tier;
+  /** rung the round was played on — the rung this number was earned on (records, personal bests) */
+  rung: Tier;
+  promoted: boolean;
+  nth: number; // counting-round number, 1-based
+  eligible: boolean; // nth >= RECORD_MIN_ROUNDS
+}
+
 /**
- * Index history as [{date, value, tier, nth, eligible}] — only rounds that produced
- * an index. `nth` is the counting-round number (1-based); `eligible` is whether
- * that snapshot can count towards a record (nth >= RECORD_MIN_ROUNDS).
+ * Index history — only rounds that produced an index. A round that promotes a
+ * player belongs to the rung they were on when they played it (`rung`): the number
+ * that graduates you is your last, and usually best, number on the old rung.
  */
-export function indexHistory(results: RoundResult[], kind: Kind): { date: string; value: number; tier: Tier; promoted: boolean; nth: number; eligible: boolean }[] {
+export function indexHistory(results: RoundResult[], kind: Kind): IndexPoint[] {
   let nth = 0;
-  const out: { date: string; value: number; tier: Tier; promoted: boolean; nth: number; eligible: boolean }[] = [];
+  const out: IndexPoint[] = [];
   for (const r of results) {
     if (!r.counting) continue;
     nth++;
     if (r[kind].indexAfter == null) continue;
-    out.push({ date: r.date, value: r[kind].indexAfter!, tier: r.tierAfter, promoted: !!r.promotedTo, nth, eligible: nth >= RECORD_MIN_ROUNDS });
+    out.push({ date: r.date, value: r[kind].indexAfter!, tier: r.tierAfter, rung: r.tierBefore, promoted: !!r.promotedTo, nth, eligible: nth >= RECORD_MIN_ROUNDS });
+  }
+  return out;
+}
+
+export interface PersonalBest {
+  tier: Tier;
+  value: number;
+  date: string;
+  nth: number; // counting-round number it was set at
+  early: boolean; // set before RECORD_MIN_ROUNDS — real, but not a settled number
+  current: boolean; // still on this rung
+}
+
+/**
+ * A player's own best index on every rung they've been on — their story, not the
+ * club trophy. Ungated on purpose: a fast graduate still gets to see what they did
+ * on Cox 45. `early` flags a best set before RECORD_MIN_ROUNDS so it isn't read as
+ * a settled achievement. The club-wide record (allTimeRecords) is separate and gated.
+ */
+export function personalBests(results: RoundResult[]): PersonalBest[] {
+  const now = currentTier(results);
+  const out: PersonalBest[] = [];
+  for (const tier of ["cox45", "pro", "whs"] as Tier[]) {
+    let best: PersonalBest | null = null;
+    for (const h of indexHistory(results, TIER_KIND[tier])) {
+      if (h.rung !== tier) continue;
+      if (!best || h.value < best.value) best = { tier, value: h.value, date: h.date, nth: h.nth, early: !h.eligible, current: tier === now };
+    }
+    if (best) out.push(best);
   }
   return out;
 }

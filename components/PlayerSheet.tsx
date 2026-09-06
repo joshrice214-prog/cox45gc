@@ -1,7 +1,7 @@
 "use client";
 import { useApp } from "./AppProvider";
 import { Avatar, Sheet, VsChip, Sparkline, TierBadge } from "./ui";
-import { currentIndex, houseHistory, houseIndex, promotions, PRO_THRESHOLD, WHS_THRESHOLD, TIER_LABEL } from "@/lib/handicap";
+import { currentIndex, houseHistory, houseIndex, personalBests, promotions, PRO_THRESHOLD, WHS_THRESHOLD, RECORD_MIN_ROUNDS, TIER_LABEL, type Tier } from "@/lib/handicap";
 import { fmtDate, fmtIdx, formGuide, headToHead, playerResults, scoreRows } from "@/lib/stats";
 
 export default function PlayerSheet({ playerId, onClose }: { playerId: string; onClose: () => void }) {
@@ -19,6 +19,12 @@ export default function PlayerSheet({ playerId, onClose }: { playerId: string; o
   const hist = houseHistory(res);
   const house = houseIndex(res);
   const proms = promotions(res);
+  const bests = personalBests(res);
+  const pbText = (t: Tier) => {
+    const b = bests.find((x) => x.tier === t);
+    return b ? `best ${b.value.toFixed(1)}${b.early ? "†" : ""}` : "Graduated";
+  };
+  const anyEarly = bests.some((b) => b.early && !b.current);
   const cox = currentIndex(res, "cox"), pro = currentIndex(res, "pro");
   const toPro = cox == null ? null : Math.round((cox - PRO_THRESHOLD) * 10) / 10;
   const toWhs = pro == null ? null : Math.round((pro - WHS_THRESHOLD) * 10) / 10;
@@ -33,11 +39,12 @@ export default function PlayerSheet({ playerId, onClose }: { playerId: string; o
         </div>
       </div>
       <div className="ladder" aria-label="Handicap ladder">
-        <div className={`rung ${house.tier !== "cox45" ? "done" : "now"}`}><b>Cox 45</b>{house.tier === "cox45" && toPro != null ? (toPro > 0 ? `${toPro.toFixed(1)} to Pro` : "Pro next round") : house.tier === "cox45" ? "3 rounds to start" : "Graduated"}</div>
-        <div className={`rung ${house.tier === "whs" ? "done" : house.tier === "pro" ? "now" : ""}`}><b>Pro</b>{house.tier === "pro" && toWhs != null ? (toWhs > 0 ? `${toWhs.toFixed(1)} to WHS` : "WHS next round") : house.tier === "whs" ? "Graduated" : `at ${PRO_THRESHOLD}`}</div>
+        <div className={`rung ${house.tier !== "cox45" ? "done" : "now"}`}><b>Cox 45</b>{house.tier === "cox45" && toPro != null ? (toPro > 0 ? `${toPro.toFixed(1)} to Pro` : "Pro next round") : house.tier === "cox45" ? "3 rounds to start" : pbText("cox45")}</div>
+        <div className={`rung ${house.tier === "whs" ? "done" : house.tier === "pro" ? "now" : ""}`}><b>Pro</b>{house.tier === "pro" && toWhs != null ? (toWhs > 0 ? `${toWhs.toFixed(1)} to WHS` : "WHS next round") : house.tier === "whs" ? pbText("pro") : `at ${PRO_THRESHOLD}`}</div>
         <div className={`rung ${house.tier === "whs" ? "now" : ""}`}><b>WHS</b>{house.tier === "whs" ? "Top rung" : `at ${WHS_THRESHOLD.toFixed(1)}`}</div>
       </div>
       {proms.length > 0 && <div className="muted small" style={{ marginTop: 8 }}>{proms.map((x) => `${TIER_LABEL[x.tier]} on ${fmtDate(x.date)}`).join(" · ")}</div>}
+      {anyEarly && <div className="muted small" style={{ marginTop: 4 }}>† set before round {RECORD_MIN_ROUNDS} — real, but not a settled number</div>}
       {hist.length >= 2 && (
         <div className="panel" style={{ padding: "10px 14px", marginTop: 12 }}>
           <div className="muted small">House index over time{proms.length ? " — brass ticks mark a promotion (new ruler, not a bad week)" : ""}</div>

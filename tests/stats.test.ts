@@ -105,3 +105,31 @@ test("most improved needs 10 rounds by the start of the season", () => {
   const hon = seasonHonours(d, 2026);
   assert.equal(hon.find((h) => h.label === "Most improved"), undefined);
 });
+
+/* ---------- personal bests ---------- */
+import { personalBests } from "../lib/handicap";
+import { playerResults } from "../lib/stats";
+
+test("personal best on a graduated rung is frozen, ungated, and separate from the club record", () => {
+  // 90s → cox −17.4 after 3 rounds → promoted straight through to whs at round 3
+  const d = fixture();
+  const res = playerResults(d, "p0");
+  const pb = personalBests(res);
+  const cox = pb.find((b) => b.tier === "cox45")!;
+  assert.ok(cox, "graduate keeps a Cox 45 personal best");
+  assert.equal(cox.early, true); // set at round 3, before the 10-round gate
+  assert.equal(cox.current, false);
+  assert.equal(cox.value, -19.2); // round 3 is the 88 → (88−107)×113/125 − 2
+  // club record is still gated: five rounds is not enough for anyone
+  const rec = allTimeRecords(d).find((r) => r.label === "Lowest Cox 45 index ever held")!;
+  assert.equal(rec.name, "Not yet earned");
+  // the promotion honour carries the number
+  const hon = seasonHonours(d, 2026).find((h) => h.label.startsWith("Graduated to"))!;
+  assert.match(hon.detail, /personal-best .* index -19\.2†/);
+});
+
+test("a player who never graduates has only their current rung", () => {
+  const pb = personalBests(playerResults(ladderFixture(6), "p0"));
+  assert.deepEqual(pb.map((b) => b.tier), ["cox45"]);
+  assert.equal(pb[0].current, true);
+});

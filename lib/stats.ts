@@ -9,6 +9,7 @@ import {
   coxCategory,
   countingRounds,
   promotions,
+  personalBests,
   recordEligible,
   tierAt,
   RECORD_MIN_ROUNDS,
@@ -331,8 +332,15 @@ export function seasonHonours(data: AppData, season: number): Honour[] {
 
   // promotions are milestones — they belong in the season they happened
   for (const p of data.players) {
-    for (const pr of promotions(playerResults(data, p.id))) {
-      if (seasonOf(pr.date) === season) out.push({ label: `Graduated to ${TIER_LABEL[pr.tier]}`, name: p.name, detail: fmtDate(pr.date) });
+    const res = playerResults(data, p.id);
+    const bests = personalBests(res);
+    for (const pr of promotions(res)) {
+      if (seasonOf(pr.date) !== season) continue;
+      // the rung they just left: pro → came from cox45; whs → came from pro
+      const from: Tier = pr.tier === "whs" ? "pro" : "cox45";
+      const pb = bests.find((b) => b.tier === from);
+      const detail = pb ? `personal-best ${TIER_LABEL[from]} index ${pb.value.toFixed(1)}${pb.early ? "†" : ""}, ${fmtDate(pr.date)}` : fmtDate(pr.date);
+      out.push({ label: `Graduated to ${TIER_LABEL[pr.tier]}`, name: p.name, detail });
     }
   }
   return out;
@@ -369,7 +377,7 @@ export function allTimeRecords(data: AppData): AllTimeRecord[] {
     let anyOnRung = false;
     for (const p of data.players) {
       for (const h of indexHistory(playerResults(data, p.id), kind)) {
-        if (t !== "whs" && h.tier !== t) continue; // World counts for everyone, always
+        if (t !== "whs" && h.rung !== t) continue; // World counts for everyone, always
         anyOnRung = true;
         if (!h.eligible) continue;
         if (!lowest || h.value < lowest.v) lowest = { name: p.name, v: h.value, date: h.date };
