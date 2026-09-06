@@ -56,6 +56,7 @@ Three tracks run in parallel for every player, differing only in padding on the 
 - **Cross-tier comparisons use World Index**, the only number on the same scale for all three rungs: leaderboard order, longest run at #1, Most Improved.
 - **Hall of Fame:** "lowest index ever held" is one record per rung, and the house rungs only count snapshots recorded while the player was actually on that rung — a Cox 45 record is frozen as a trophy when the player graduates and is never rewritten. Promotions appear as season honours.
 - The sparkline breaks and shows a brass tick at a promotion so the jump reads as "new ruler", not a bad week.
+- **10-round gate on index records.** "Lowest index ever held" and "Most improved" only consider a player's index from their 10th counting round onward (`RECORD_MIN_ROUNDS` in `lib/handicap.ts`). A 3-round index is one good day with a −2.0 adjustment on top; round 10 is half the WHS window and exactly where the table steps to "lowest 3". Single-performance records (best gross, best vs Cox Par, most Cox Birds in a round) are not gated, and neither is ladder promotion — that's a real graduation, not a trophy claim. Until someone qualifies, the Hall of Fame line reads "Not yet earned".
 
 ## Order of merit
 

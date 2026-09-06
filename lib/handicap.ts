@@ -22,6 +22,18 @@ export const PADDING: Record<Kind, number> = { world: 0, pro: 1, cox: 2 };
 export const PRO_THRESHOLD = -10.5; // Cox 45 index at or below this → Cox 45 Pro
 export const WHS_THRESHOLD = -1.0; // Cox 45 Pro index at or below this → WHS Only
 
+/**
+ * Rounds a player needs before their index is eligible for the record book
+ * (lowest index ever held, most improved). Half the 20-round WHS window, and
+ * exactly where the table steps from "lowest 2" to "lowest 3" — the point at
+ * which the number stops being one good day with an adjustment on top.
+ *
+ * This gates trophies only. The live index, the cap, and ladder promotion all
+ * use the number as soon as it exists (3 rounds) — a promotion is a real
+ * graduation, not a record claim.
+ */
+export const RECORD_MIN_ROUNDS = 10;
+
 /** The track that is a player's headline "house" number at a given tier. */
 export const TIER_KIND: Record<Tier, Kind> = { cox45: "cox", pro: "pro", whs: "world" };
 export const TIER_LABEL: Record<Tier, string> = { cox45: "Cox 45", pro: "Cox 45 Pro", whs: "WHS Only" };
@@ -332,11 +344,37 @@ export function currentIndex(results: RoundResult[], kind: Kind): number | null 
   return null;
 }
 
-/** Index history as [{date, value, tier}] — only rounds that produced an index. */
-export function indexHistory(results: RoundResult[], kind: Kind): { date: string; value: number; tier: Tier; promoted: boolean }[] {
-  return results
-    .filter((r) => r.counting && r[kind].indexAfter != null)
-    .map((r) => ({ date: r.date, value: r[kind].indexAfter!, tier: r.tierAfter, promoted: !!r.promotedTo }));
+/**
+ * Index history as [{date, value, tier, nth, eligible}] — only rounds that produced
+ * an index. `nth` is the counting-round number (1-based); `eligible` is whether
+ * that snapshot can count towards a record (nth >= RECORD_MIN_ROUNDS).
+ */
+export function indexHistory(results: RoundResult[], kind: Kind): { date: string; value: number; tier: Tier; promoted: boolean; nth: number; eligible: boolean }[] {
+  let nth = 0;
+  const out: { date: string; value: number; tier: Tier; promoted: boolean; nth: number; eligible: boolean }[] = [];
+  for (const r of results) {
+    if (!r.counting) continue;
+    nth++;
+    if (r[kind].indexAfter == null) continue;
+    out.push({ date: r.date, value: r[kind].indexAfter!, tier: r.tierAfter, promoted: !!r.promotedTo, nth, eligible: nth >= RECORD_MIN_ROUNDS });
+  }
+  return out;
+}
+
+/** Counting rounds the player had completed on or before a date. */
+export function roundsPlayedBy(results: RoundResult[], date: string): number {
+  let n = 0;
+  for (const r of results) {
+    if (r.date > date) break;
+    if (r.counting) n++;
+  }
+  return n;
+}
+
+/** True once a player has enough rounds for their index to count in the record book. */
+export function recordEligible(results: RoundResult[], date?: string): boolean {
+  const n = date ? roundsPlayedBy(results, date) : results.filter((r) => r.counting).length;
+  return n >= RECORD_MIN_ROUNDS;
 }
 
 /**

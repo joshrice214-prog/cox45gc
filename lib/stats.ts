@@ -9,7 +9,9 @@ import {
   coxCategory,
   countingRounds,
   promotions,
+  recordEligible,
   tierAt,
+  RECORD_MIN_ROUNDS,
   KIND_LABEL,
   TIER_LABEL,
   TIER_KIND,
@@ -311,11 +313,15 @@ export function seasonHonours(data: AppData, season: number): Honour[] {
 
   // most improved — World index at start of season vs end. World is used because a
   // player promoted mid-season would otherwise be measured on two different rulers.
+  // Both ends must be record-eligible (RECORD_MIN_ROUNDS) or an early, noisy number
+  // can manufacture an "improvement" that is really just the index settling down.
   let bestImp: { name: string; delta: number } | null = null;
   for (const p of data.players) {
     const res = playerResults(data, p.id);
-    const start = indexAt(res, "world", `${season - 1}-12-31`);
-    const end = indexAt(res, "world", `${season}-12-31`);
+    const startDate = `${season - 1}-12-31`, endDate = `${season}-12-31`;
+    if (!recordEligible(res, startDate) || !recordEligible(res, endDate)) continue;
+    const start = indexAt(res, "world", startDate);
+    const end = indexAt(res, "world", endDate);
     if (start != null && end != null) {
       const delta = start - end;
       if (!bestImp || delta > bestImp.delta) bestImp = { name: p.name, delta };
@@ -353,16 +359,24 @@ export function allTimeRecords(data: AppData): AllTimeRecord[] {
   // Lowest index ever held — one record per track, and the house tracks only count
   // snapshots recorded while the player was actually on that rung. A player's Cox 45
   // history is frozen as a trophy the moment they graduate; it is never rewritten.
+  // Only snapshots from a player's RECORD_MIN_ROUNDS-th round onward are eligible:
+  // a 3-round index is one good day with an adjustment on top, not a record.
+  // Single-performance records above (best gross, best vs Cox Par) are not gated.
   for (const t of ["cox45", "pro", "whs"] as Tier[]) {
     const kind = TIER_KIND[t];
+    const label = `Lowest ${t === "whs" ? "World" : TIER_LABEL[t]} index ever held`;
     let lowest: { name: string; v: number; date: string } | null = null;
+    let anyOnRung = false;
     for (const p of data.players) {
       for (const h of indexHistory(playerResults(data, p.id), kind)) {
         if (t !== "whs" && h.tier !== t) continue; // World counts for everyone, always
+        anyOnRung = true;
+        if (!h.eligible) continue;
         if (!lowest || h.value < lowest.v) lowest = { name: p.name, v: h.value, date: h.date };
       }
     }
-    if (lowest) out.push({ label: `Lowest ${t === "whs" ? "World" : TIER_LABEL[t]} index ever held`, name: lowest.name, detail: `${lowest.v.toFixed(1)}, ${fmtDate(lowest.date)}` });
+    if (lowest) out.push({ label, name: lowest.name, detail: `${lowest.v.toFixed(1)}, ${fmtDate(lowest.date)}` });
+    else if (anyOnRung) out.push({ label, name: "Not yet earned", detail: `needs ${RECORD_MIN_ROUNDS} rounds${t === "whs" ? "" : " on this rung"}` });
   }
 
   const mostBirds = [...rows].sort((a, b) => b.coxBirds - a.coxBirds)[0];

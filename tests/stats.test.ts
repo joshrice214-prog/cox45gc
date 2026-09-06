@@ -55,3 +55,53 @@ test("course records, birdies, honours, all-time", () => {
   assert.equal(all.find((h) => h.label === "Best gross round")!.detail.startsWith("88"), true);
   assert.equal(longestRunAtTop(d)!.name, "Josh");
 });
+
+/* ---------- the 10-round record gate ---------- */
+
+function ladderFixture(n: number, extra?: { lateGoodRound?: boolean }): AppData {
+  // one player, n identical +4 rounds so they stay on Cox 45 the whole way
+  const players = [{ id: "p0", name: "Matt", first_name: "Matt", last_name: null, photo_url: null }];
+  const course = { id: "c1", name: "Pinewood", holes: 18, pars: PARS, stroke_index: SI, course_rating: 71, slope: 125 };
+  const rounds = [], scores = [];
+  for (let i = 0; i < n; i++) {
+    const id = "r" + i;
+    const d = new Date(Date.UTC(2026, 0, 1 + i * 7)).toISOString().slice(0, 10);
+    rounds.push({ id, course_id: "c1", date: d, holes: 18, course_rating: 71, slope: 125, event_id: null });
+    // round 2 is a fluke (+2/hole = 108); everything else is +4/hole (144)
+    const fluke = i === 1;
+    const s = PARS.map((p) => p + (fluke ? 2 : 4));
+    scores.push({ round_id: id, player_id: "p0", hole_scores: s, gross_total: s.reduce((a, b) => a + b, 0) });
+  }
+  void extra;
+  return { players, courses: [course], rounds, scores, events: [], rsvps: [], availability: [] };
+}
+
+test("lowest-index record is withheld before round 10 and awarded from round 10", () => {
+  const nine = allTimeRecords(ladderFixture(9));
+  const w9 = nine.find((r) => r.label === "Lowest World index ever held")!;
+  assert.equal(w9.name, "Not yet earned");
+  assert.match(w9.detail, /10 rounds/);
+
+  const ten = allTimeRecords(ladderFixture(10));
+  const w10 = ten.find((r) => r.label === "Lowest World index ever held")!;
+  assert.equal(w10.name, "Matt");
+  // round 10 uses lowest 3 of 10 → (33.4 + 33.4 + 66.0)/3 = 44.3, not the round-3 fluke number
+  // (round 3: lowest 1 of 3 − 2 = 33.4 − 2 = 31.4 — that number never becomes a record)
+  const v = Number(w10.detail.split(",")[0]);
+  assert.ok(v > 31.5, `record ${v} must not be the early fluke 31.4`);
+  const c10 = ten.find((r) => r.label === "Lowest Cox 45 index ever held")!;
+  assert.equal(c10.name, "Matt");
+});
+
+test("single-performance records are not gated", () => {
+  const three = allTimeRecords(ladderFixture(3));
+  assert.equal(three.find((r) => r.label === "Best gross round")!.name, "Matt");
+  assert.ok(three.find((r) => r.label === "Best round vs Cox Par"));
+});
+
+test("most improved needs 10 rounds by the start of the season", () => {
+  // 12 rounds in 2026 only → start of 2026 has 0 rounds → not eligible even though the index moved
+  const d = ladderFixture(12);
+  const hon = seasonHonours(d, 2026);
+  assert.equal(hon.find((h) => h.label === "Most improved"), undefined);
+});
